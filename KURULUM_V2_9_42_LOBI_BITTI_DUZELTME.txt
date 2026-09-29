@@ -1,0 +1,24 @@
+ROULETTE PRO AI V2.9.42 LOBİ BİTTİ DÜZELTME KURULUM
+
+KURULUM
+1. ZIP dosyasını indir.
+2. ZIP içindeki dosyaları mevcut program klasörüne çıkar.
+3. Sorarsa üzerine yaz.
+4. Programı başlat:
+   BASLAT_ROULETTE_V2_9_12_MULTI_TABLE_COLLECTOR.bat
+
+KONTROL
+- Üst başlıkta V2.9.42 LOBİ BİTTİ yazmalı.
+
+KULLANIM
+1. VERİ panelinden şuna bas:
+   TEK SEKME LOBİ TOPLA • 5 DK
+2. Program masaları tek sekmede gezer.
+3. SON500 olan masalarda 500 spin kaydeder.
+4. PowerUp Rulet / SON500 olmayan masaları atlar.
+5. Masalar bitince artık eski masa varmış gibi beklemez; lobby turunu bitirip 5 dk sonraki otomatik tekrara geçer.
+
+EĞER EKRANDA LOBİ VARSA
+- Durum şurada kalmamalı:
+  oyun içi Lobi düğmesi tıklandı • Pragmatic Rulet lobisi bekleniyor
+- Birkaç saniye içinde lobby kartları sayılmalı veya tur bitti yazmalıdır.
