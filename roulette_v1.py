@@ -1018,7 +1018,6 @@ def choose_live_dom_candidate(candidates, current_history):
         }
 
     best = None
-    max_head_skip = 2 if len(current) >= 6 else 0
 
     for nums, meta in prepared:
         variants = [("forward", nums)]
@@ -1026,59 +1025,50 @@ def choose_live_dom_candidate(candidates, current_history):
         if rev != nums:
             variants.append(("reverse", rev))
 
-        for head_skip in range(max_head_skip + 1):
-            cur_slice = current[head_skip:]
-            if len(cur_slice) < 4:
-                continue
+        for orientation, cand in variants:
+            min_tail = 3 if len(cand) <= 12 else 4
+            max_shift = min(16, max(0, len(cand) - min_tail))
 
-            for orientation, cand in variants:
-                min_tail = 3 if (head_skip == 0 and len(cand) <= 12) else 4
-                max_shift = min(16, max(0, len(cand) - min_tail))
+            for shift in range(max_shift + 1):
+                max_cmp = min(len(current), len(cand) - shift, 20)
+                overlap = 0
+                for i in range(max_cmp):
+                    if cand[shift + i] != current[i]:
+                        break
+                    overlap += 1
 
-                for shift in range(max_shift + 1):
-                    max_cmp = min(len(cur_slice), len(cand) - shift, 20)
-                    overlap = 0
-                    for i in range(max_cmp):
-                        if cand[shift + i] != cur_slice[i]:
-                            break
-                        overlap += 1
+                if shift == 0:
+                    req_ov = min(5, len(cand), len(current))
+                elif len(cand) <= 12:
+                    req_ov = 3 if (len(cand) - shift) == 3 else min(4, len(current))
+                else:
+                    req_ov = min(5, max(4, len(cand) - shift), len(current))
 
-                    if head_skip > 0:
-                        req_ov = min(4, len(cur_slice))
-                    elif shift == 0:
-                        req_ov = min(5, len(cand), len(cur_slice))
-                    elif len(cand) <= 12:
-                        req_ov = 3 if (len(cand) - shift) == 3 else min(4, len(cur_slice))
-                    else:
-                        req_ov = min(5, max(4, len(cand) - shift), len(cur_slice))
+                if overlap < req_ov:
+                    continue
 
-                    if overlap < req_ov:
-                        continue
+                relation = "ahead" if shift > 0 else "same"
+                priority = 2 if shift > 0 else 1
 
-                    relation = "ahead" if (shift > 0 or head_skip > 0) else "same"
-                    priority = 2 if shift > 0 else 1
+                score = (
+                    priority,
+                    overlap,
+                    shift if shift > 0 else 0,
+                    len(cand),
+                )
 
-                    score = (
-                        -head_skip,
-                        priority,
-                        overlap,
-                        shift if shift > 0 else 0,
-                        len(cand),
-                    )
+                row = {
+                    "nums": cand,
+                    "meta": meta,
+                    "relation": relation,
+                    "new_count": shift,
+                    "overlap": overlap,
+                    "orientation": orientation,
+                    "_score": score,
+                }
 
-                    row = {
-                        "nums": cand,
-                        "meta": meta,
-                        "relation": relation,
-                        "new_count": shift,
-                        "overlap": overlap,
-                        "head_skip": head_skip,
-                        "orientation": orientation,
-                        "_score": score,
-                    }
-
-                    if best is None or row["_score"] > best["_score"]:
-                        best = row
+                if best is None or row["_score"] > best["_score"]:
+                    best = row
 
     if best is None:
         return None
@@ -1119,50 +1109,43 @@ def align_reference_to_live(current_history, reference_history, max_new=25):
     ]
 
     best = None
-    max_head_skip = 2 if len(current) >= 6 else 0
 
-    for head_skip in range(max_head_skip + 1):
-        cur_slice = current[head_skip:]
-        if len(cur_slice) < 4:
-            continue
+    for orientation, cand in variants:
+        limit = min(max_new, max(0, len(cand) - 4))
 
-        for orientation, cand in variants:
-            limit = min(max_new, max(0, len(cand) - 4))
+        for shift in range(0, limit + 1):
+            overlap = min(
+                len(current),
+                len(cand) - shift,
+                20,
+            )
 
-            for shift in range(0, limit + 1):
-                overlap = min(
-                    len(cur_slice),
-                    len(cand) - shift,
-                    20,
-                )
+            if overlap < 4:
+                continue
 
-                if overlap < 4:
-                    continue
+            # Require exact contiguous head continuity.
+            if cand[shift:shift + overlap] != current[:overlap]:
+                continue
 
-                # Require exact contiguous head continuity.
-                if cand[shift:shift + overlap] != cur_slice[:overlap]:
-                    continue
+            # Longer exact overlap is overwhelmingly preferred.
+            # For equal overlap, prefer fewer missing new spins.
+            score = (
+                overlap,
+                -shift,
+                1 if orientation == "forward" else 0,
+            )
 
-                # Prefer zero head_skip, longer exact overlap, fewer missing spins.
-                score = (
-                    -head_skip,
-                    overlap,
-                    -shift,
-                    1 if orientation == "forward" else 0,
-                )
+            row = {
+                "orientation": orientation,
+                "reference": cand,
+                "new_count": shift,
+                "new_items": cand[:shift],
+                "overlap": overlap,
+                "_score": score,
+            }
 
-                row = {
-                    "orientation": orientation,
-                    "reference": cand,
-                    "new_count": shift,
-                    "new_items": cand[:shift],
-                    "overlap": overlap,
-                    "head_skip": head_skip,
-                    "_score": score,
-                }
-
-                if best is None or row["_score"] > best["_score"]:
-                    best = row
+            if best is None or row["_score"] > best["_score"]:
+                best = row
 
     if best is None:
         return None
@@ -1181,22 +1164,16 @@ def detect_new_front(old_history, new_history, max_new=16):
     if not old or not new or old == new:
         return []
 
+    ov0 = min(len(old), len(new))
+    if ov0 >= 3 and new[:ov0] == old[:ov0]:
+        return []
+
     max_k = min(max_new, len(new))
     for k in range(1, max_k + 1):
         overlap = min(len(new) - k, len(old))
         req_ov = 3 if (len(new) <= 12 and (len(new) - k) == 3 and len(old) >= 3) else 4
         if overlap >= req_ov and new[k:k+overlap] == old[:overlap]:
             return new[:k]
-
-    # Self-healing fallback: if 1-2 stale screen numbers were prepended to `old`
-    # earlier, still detect continuity against `old[head_skip:]` when >=4 numbers match.
-    max_skip = 2 if len(old) >= 6 else 0
-    for head_skip in range(1, max_skip + 1):
-        old_slice = old[head_skip:]
-        for k in range(1, max_k + 1):
-            overlap = min(len(new) - k, len(old_slice))
-            if overlap >= 4 and new[k:k+overlap] == old_slice[:overlap]:
-                return new[:k]
     return []
 
 
@@ -5772,14 +5749,12 @@ class RouletteState:
                 else None
             )
             verified_live_new = []
-            live_head_skip = 0
 
             if live_alignment:
                 clean = list(live_alignment["reference"])
                 verified_live_new = list(
                     live_alignment.get("new_items", [])
                 )
-                live_head_skip = int(live_alignment.get("head_skip", 0) or 0)
             else:
                 ref_win = self.table_long_history[:500] if self.table_long_history else previous_500
                 clean = self._normalize_background_window(clean, ref_win)
@@ -5885,18 +5860,11 @@ class RouletteState:
                 self._try_load_learning(self.table_name, self.history)
                 self._refresh_imported_history(force=True)
 
-            if self.history and (verified_live_new or live_head_skip > 0):
+            if self.history and verified_live_new:
                 # Safe catch-up:
                 # SON500 is NOT replacing history. It only proved that these
                 # exact new numbers were prepended to the current live head.
-                base_hist = (
-                    list(self.history[live_head_skip:])
-                    if live_head_skip > 0 and len(self.history) > live_head_skip
-                    else list(self.history)
-                )
-                if live_head_skip > 0:
-                    self.pending_prediction = self._make_prediction(base_hist)
-                temp_hist = list(base_hist)
+                temp_hist = list(self.history)
 
                 for actual in reversed(verified_live_new):
                     self._safe_score_pending(int(actual))
@@ -5906,7 +5874,7 @@ class RouletteState:
 
                 self.history = (
                     [int(x) for x in verified_live_new]
-                    + base_hist
+                    + list(self.history)
                 )[:20]
 
                 self.source = (
@@ -6977,22 +6945,8 @@ class RouletteState:
                     new_items = detect_new_front(self.history, clean[:20], max_new=16)
 
                     if new_items:
-                        base_hist = list(self.history)
-                        k_new = len(new_items)
-                        if k_new > 0 and len(clean) > k_new:
-                            for hs in (0, 1, 2):
-                                if len(self.history) <= hs:
-                                    continue
-                                hs_slice = self.history[hs:]
-                                ov = min(len(clean) - k_new, len(hs_slice))
-                                if ov >= 3 and clean[k_new:k_new + ov] == hs_slice[:ov]:
-                                    base_hist = list(hs_slice)
-                                    if hs > 0:
-                                        self.pending_prediction = self._make_prediction(base_hist)
-                                    break
-
                         # new_items are newest-first; replay chronologically.
-                        temp_hist = list(base_hist)
+                        temp_hist = list(self.history)
                         for actual in reversed(new_items):
                             self._safe_score_pending(actual)
                             self.session_results.append(int(actual))
@@ -7003,27 +6957,14 @@ class RouletteState:
                         if len(clean) >= 20:
                             self.history = clean[:20]
                         else:
-                            self.history = ([int(x) for x in new_items] + base_hist)[:20]
+                            self.history = ([int(x) for x in new_items] + list(self.history))[:20]
                         # Recalculate once with the exact received last20.
                         self.pending_prediction = self._make_prediction(self.history)
                         self._save_learning()
                     elif clean[:20] == self.history[:len(clean[:20])]:
                         pass
                     else:
-                        # Self-heal if clean matches self.history[1:] or self.history[2:] with 0 new items
-                        healed = False
-                        for hs in (1, 2):
-                            if len(self.history) > hs + 4:
-                                hs_slice = self.history[hs:]
-                                ov = min(len(clean), len(hs_slice), 20)
-                                if ov >= 5 and clean[:ov] == hs_slice[:ov]:
-                                    self.history = list(hs_slice[:20])
-                                    self.pending_prediction = self._make_prediction(self.history)
-                                    self._save_learning()
-                                    healed = True
-                                    break
-                        if not healed:
-                            return
+                        return
 
             if hot:
                 self.hot = [
@@ -11437,63 +11378,32 @@ class ChromeBridge(threading.Thread):
                                 context=sid,
                             )
 
-                    is_active_roulette = (
-                        self._is_active_session(sid)
-                        and (
-                            self.is_roulette_target(sid)
-                            or self.is_recovery_target(sid)
-                            or sid == self.active_game_sid
-                            or sid in self.session_table_activity
-                        )
-                    )
-                    if is_active_roulette:
-                        active_ctx_ids = [None]
-                        for ctx in (self.execution_contexts.get(sid) or {}).values():
-                            cid = ctx.get("id")
-                            aux = ctx.get("auxData") or {}
-                            origin = str(ctx.get("origin") or "").lower()
-                            if cid is None or not bool(aux.get("isDefault", False)):
-                                continue
-                            if not origin.startswith(("http://", "https://")):
-                                continue
-                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
-                                continue
-                            active_ctx_ids.append(int(cid))
-                        active_ctx_ids = list(dict.fromkeys(active_ctx_ids))[:5]
-
-                        for ctx_id in active_ctx_ids:
-                            dom_params = {
+                    if self.is_roulette_target(sid) and self._is_active_session(sid):
+                        self.send(
+                            "Runtime.evaluate",
+                            {
                                 "expression": DOM_SCAN,
                                 "returnByValue": True,
                                 "awaitPromise": True,
-                            }
-                            if ctx_id is not None:
-                                dom_params["contextId"] = int(ctx_id)
+                            },
+                            session_id=sid,
+                            kind="domscan",
+                            context=sid,
+                        )
+
+                        if now - float(last_500_scan.get(sid, 0.0)) >= 6.0:
+                            last_500_scan[sid] = now
                             self.send(
                                 "Runtime.evaluate",
-                                dom_params,
-                                session_id=sid,
-                                kind="domscan",
-                                context=sid,
-                            )
-
-                        if now - float(last_500_scan.get(sid, 0.0)) >= 4.5:
-                            last_500_scan[sid] = now
-                            for ctx_id in active_ctx_ids:
-                                h500_params = {
+                                {
                                     "expression": HISTORY500_SCAN,
                                     "returnByValue": True,
                                     "awaitPromise": True,
-                                }
-                                if ctx_id is not None:
-                                    h500_params["contextId"] = int(ctx_id)
-                                self.send(
-                                    "Runtime.evaluate",
-                                    h500_params,
-                                    session_id=sid,
-                                    kind="history500",
-                                    context=sid,
-                                )
+                                },
+                                session_id=sid,
+                                kind="history500",
+                                context=sid,
+                            )
 
                     # Background bank collection: old/hidden tables are allowed
                     # to feed THEIR OWN tableId archive only. They cannot affect
@@ -16099,12 +16009,14 @@ def self_test():
     assert "lobbyLike: true" in DOM_SCAN
     assert "earlyLobbyLike" in HISTORY500_SCAN
 
-    # Narrow 10-number DOM bar catch-up + stale head self-healing assertions:
-    frozen_cur = [20, 31, 14, 15, 18, 20, 2, 11, 32, 16, 14, 19, 10, 17, 6, 35, 34, 12, 27, 4]
+    # Narrow 10-number DOM bar catch-up & anti-repeat assertions:
+    cur_20 = [31, 14, 15, 18, 20, 2, 11, 32, 16, 14, 19, 10, 17, 6, 35, 34, 12, 27, 4, 8]
+    narrow_same_10 = cur_20[:10]
+    assert detect_new_front(cur_20, narrow_same_10, max_new=16) == []
     narrow_bar_10 = [9, 29, 13, 13, 11, 16, 31, 14, 15, 18]
-    dom_cand = choose_live_dom_candidate([{"nums": narrow_bar_10, "cls": "recent-results"}], frozen_cur)
-    assert dom_cand is not None and dom_cand["new_count"] == 6 and dom_cand["head_skip"] == 1
-    assert detect_new_front(frozen_cur, narrow_bar_10, max_new=16) == [9, 29, 13, 13, 11, 16]
+    dom_cand = choose_live_dom_candidate([{"nums": narrow_bar_10, "cls": "recent-results"}], cur_20)
+    assert dom_cand is not None and dom_cand["new_count"] == 6
+    assert detect_new_front(cur_20, narrow_bar_10, max_new=16) == [9, 29, 13, 13, 11, 16]
 
     return True
 
