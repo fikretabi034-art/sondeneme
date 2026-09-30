@@ -6028,11 +6028,29 @@ class RouletteState:
                 self._try_load_learning(self.table_name, self.history)
                 self._refresh_imported_history(force=True)
 
-            # SON500 is archive/model data; never score fake live rounds from SON500.
-            # However, when the user expands the SON500 drawer on the same table (or
-            # when SON20 only had 10 numbers from the collapsed bar), silently sync
-            # SON20 to the authoritative SON500 top 20 without scoring fake rounds.
-            if self.history and same_table and len(clean) >= 40:
+            if (
+                self.history
+                and same_table
+                and len(clean) >= 50
+                and verified_live_new
+                and 1 <= len(verified_live_new) <= 10
+                and int((live_alignment or {}).get("overlap", 0) or 0) >= min(10, len(self.history))
+            ):
+                temp_hist = list(self.history)
+                for actual in reversed(verified_live_new):
+                    self._safe_score_pending(int(actual))
+                    self.session_results.append(int(actual))
+                    temp_hist = [int(actual)] + temp_hist[:19]
+                    self.pending_prediction = self._make_prediction(temp_hist)
+
+                self.history = list(clean[:20])
+                self.source = f"SON500 canlı +{len(verified_live_new)}"
+                self.roulette_seen = True
+                self.status = "CANLI • SON500 SENKRON"
+                self.last_update = time.time()
+                self.pending_prediction = self._make_prediction(self.history)
+                self._save_learning()
+            elif self.history and same_table and len(clean) >= 40:
                 head_cmp = min(8, len(self.history))
                 if (
                     len(self.history) < 20
@@ -7611,29 +7629,71 @@ DOM_SCAN = r"""
   }
 
   const exactNumber = /^(?:[0-9]|[12][0-9]|3[0-6])$/;
-  function deepVis(el) {
-    let cur = el;
-    for (let d = 0; d < 10 && cur && cur.nodeType === 1; d++, cur = cur.parentElement) {
-      const r = cur.getBoundingClientRect();
-      const s = getComputedStyle(cur);
-      if (r.width <= 1 || r.height <= 1) return false;
-      if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity || "1") <= 0.05) {
-        return false;
-      }
+  const out = [];
+  const seen = new Set();
+
+  function queryAllDeep(selector) {
+    const res = [];
+    const visited = new Set();
+    function walk(root) {
+      if (!root || visited.has(root)) return;
+      visited.add(root);
+      try {
+        for (const n of root.querySelectorAll(selector)) res.push(n);
+      } catch (_) {}
+      try {
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+          if (el.tagName === 'IFRAME' && el.contentDocument) walk(el.contentDocument);
+        }
+      } catch (_) {}
     }
-    return true;
+    walk(document);
+    return res;
   }
 
-  let son500Open = false;
-  for (const el of document.querySelectorAll('button,[role="tab"],[role="button"],div,span,a')) {
+  // 1) Check if the SON 500 / LAST 500 drawer is visibly open.
+  // When open, extract the grid numbers directly after the "SON 500" / "LAST 500" header!
+  let son500Tab = null;
+  for (const el of queryAllDeep('button,[role="tab"],[role="button"],div,span,a')) {
     if (!vis(el)) continue;
     const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toUpperCase();
-    if ((t === "SON 500" || t === "LAST 500" || (/^(?:SON|LAST)\s*500$/.test(t))) && deepVis(el)) {
-      son500Open = true;
+    if ((t === "SON 500" || t === "LAST 500" || (/^(?:SON|LAST)\s*500$/.test(t))) && t.length <= 24) {
+      son500Tab = el;
       break;
     }
   }
 
+  let son500Open = false;
+  if (son500Tab) {
+    let p = son500Tab.parentElement;
+    for (let depth = 1; depth <= 12 && p; depth++, p = p.parentElement) {
+      const pr = p.getBoundingClientRect();
+      if (pr.width > 620) break;
+      const rawTxt = (p.innerText || p.textContent || "").replace(/\s+/g, " ").trim();
+      const idx = rawTxt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
+      const sliced = idx >= 0 ? rawTxt.slice(idx).replace(/^(?:SON|LAST)\s*500\b/i, "") : rawTxt;
+      if (/%/.test(sliced)) continue;
+      const nums = (sliced.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || []).map(Number);
+      if (nums.length >= 40) {
+        son500Open = true;
+        seen.add(p);
+        out.push({
+          testid: p.getAttribute("data-testid") || "son500-drawer",
+          cls: p.getAttribute("class") || "history-son500",
+          collapsedBar: false,
+          son500Grid: true,
+          nums: nums.slice(0, 30)
+        });
+        break;
+      }
+    }
+  }
+
+  // 2) Standard history/recent/result selectors.
+  // Use el.innerText (which respects display:none/visibility:hidden in Chrome).
+  // When son500Open is false (drawer is Collapsed / Küçült), cap nums to 10 so
+  // outer wrappers never overwrite positions 11..20 of SON 20!
   const selectors = [
     '[data-testid*="history"]',
     '[data-testid*="result"]',
@@ -7646,104 +7706,39 @@ DOM_SCAN = r"""
     '[class*="Result"]'
   ];
 
-  const out = [];
-  const seen = new Set();
-  const badAncestorRe = /(hot|cold|sicak|soguk|soğuk|graph|grafik|wheel|racetrack|chip|bet|stake|balance|bakiye|limit|voisin|orphelin|tiers)/i;
-
   for (const sel of selectors) {
-    for (const el of document.querySelectorAll(sel)) {
+    for (const el of queryAllDeep(sel)) {
       if (seen.has(el)) continue;
       if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
-      if (!deepVis(el)) continue;
+      if (!vis(el)) continue;
       seen.add(el);
 
-      const elHint = [
-        el.id || "",
-        el.getAttribute("class") || "",
-        el.getAttribute("data-testid") || "",
-        el.getAttribute("aria-label") || ""
-      ].join(" ");
-      if (badAncestorRe.test(elHint)) continue;
+      let txt = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      if (!txt) continue;
+      if (/BAKIYE|BALANCE|TOPLAM\s*BAHIS|TOTAL\s*BET|VOISINS|ORPHELINS|TIERS/i.test(txt)) continue;
 
-      const leaves = [];
-      for (const node of el.querySelectorAll('*')) {
-        if (!deepVis(node)) continue;
-        const raw = (node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
-        if (!exactNumber.test(raw)) continue;
-        let childAlsoNum = false;
-        for (const ch of node.children || []) {
-          const ct = (ch.innerText || ch.textContent || "").replace(/\s+/g, " ").trim();
-          if (exactNumber.test(ct)) {
-            childAlsoNum = true;
-            break;
-          }
-        }
-        if (childAlsoNum) continue;
-        const nr = node.getBoundingClientRect();
-        if (nr.width < 5 || nr.height < 5 || nr.width > 75 || nr.height > 65) continue;
-        let p = node;
-        let blocked = false;
-        for (let d = 0; d < 5 && p && p !== el; d++, p = p.parentElement) {
-          const ph = [p.id || "", p.getAttribute("class") || "", p.getAttribute("data-testid") || ""].join(" ");
-          const pt = (p.innerText || p.textContent || "").replace(/\s+/g, " ").trim();
-          if (badAncestorRe.test(ph) || /%|SICAK|SOĞUK|SOGUK|HOT|COLD|GRAF[İI]K|GRAPH/i.test(pt)) {
-            blocked = true;
-            break;
-          }
-        }
-        if (blocked) continue;
-        leaves.push({
-          n: Number(raw),
-          x: nr.left + nr.width / 2,
-          y: nr.top + nr.height / 2
-        });
+      const idx500 = txt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
+      if (idx500 >= 0) {
+        txt = txt.slice(idx500).replace(/^(?:SON|LAST)\s*500\b/i, "");
+      } else if (/%|SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD|GRAF[İI]KLER/i.test(txt)) {
+        const cutIdx = txt.toUpperCase().search(/SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD|GRAF[İI]KLER|%/);
+        if (cutIdx >= 0) txt = txt.slice(0, cutIdx);
       }
 
-      if (leaves.length >= 5) {
-        leaves.sort((a, b) => Math.round(a.y / 9) - Math.round(b.y / 9) || a.x - b.x);
-        const ys = leaves.map(l => l.y);
-        const rowSpan = Math.max(...ys) - Math.min(...ys);
+      const nums = (txt.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || [])
+        .map(Number);
 
-        if (!son500Open) {
-          // Drawer is collapsed (Küçült): only the single-row 10-number bar is
-          // genuinely visible. If a wrapper captured multiple rows, isolate the
-          // bottommost horizontal bar row (8..12 numbers).
-          if (rowSpan <= 20 && leaves.length <= 14) {
-            out.push({
-              testid: el.getAttribute("data-testid") || "",
-              cls: el.getAttribute("class") || "",
-              collapsedBar: true,
-              son500Grid: false,
-              nums: leaves.map(l => l.n).slice(0, 14)
-            });
-          } else {
-            const maxY = Math.max(...ys);
-            const bottomRow = leaves
-              .filter(l => Math.abs(l.y - maxY) <= 12)
-              .sort((a, b) => a.x - b.x);
-            if (bottomRow.length >= 8 && bottomRow.length <= 14) {
-              out.push({
-                testid: el.getAttribute("data-testid") || "",
-                cls: el.getAttribute("class") || "",
-                collapsedBar: true,
-                son500Grid: false,
-                nums: bottomRow.map(l => l.n)
-              });
-            }
-          }
-        } else {
-          const isGrid = rowSpan > 20 && leaves.length >= 20;
-          const isBar = rowSpan <= 20 && leaves.length <= 14;
-          if (isGrid || isBar) {
-            out.push({
-              testid: el.getAttribute("data-testid") || "",
-              cls: el.getAttribute("class") || "",
-              collapsedBar: isBar,
-              son500Grid: isGrid,
-              nums: leaves.map(l => l.n).slice(0, 30)
-            });
-          }
-        }
+      if (nums.length >= 5) {
+        if (nums.length >= 40) son500Open = true;
+        const isGrid = son500Open && nums.length >= 20;
+        const limit = isGrid ? 30 : 10;
+        out.push({
+          testid: el.getAttribute("data-testid") || "",
+          cls: el.getAttribute("class") || "",
+          collapsedBar: !isGrid,
+          son500Grid: isGrid,
+          nums: nums.slice(0, limit)
+        });
       }
     }
   }
@@ -7812,17 +7807,12 @@ HISTORY500_SCAN = r"""
 
   function visibleStyle(el) {
     try {
-      let cur = el;
-      for (let d = 0; d < 10 && cur && cur.nodeType === 1; d++, cur = cur.parentElement) {
-        const win = (cur.ownerDocument && cur.ownerDocument.defaultView) || window;
-        const s = win.getComputedStyle(cur);
-        const r = cur.getBoundingClientRect();
-        if (r.width <= 1 || r.height <= 1) return false;
-        if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity || 1) <= 0.05) {
-          return false;
-        }
-      }
-      return true;
+      const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const s = win.getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return r.width > 1 && r.height > 1 &&
+             s.display !== "none" && s.visibility !== "hidden" &&
+             Number(s.opacity || 1) !== 0;
     } catch (_) {
       return false;
     }
@@ -7988,24 +7978,24 @@ HISTORY500_SCAN = r"""
     }
   }
 
-  if (tab) {
-    try { tab.click(); } catch (_) {}
-    await sleep(350);
-  }
-
   let roots = [];
 
-  // CRITICAL: Only read SON 500 numbers when the SON 500 tab is genuinely visible!
-  // Never read the 430x390 box above OTOMATİK OYUN or whole-page clusters when
-  // the drawer is collapsed, because that captures the 3D wheel (23, 10...) and
-  // the 37-number betting grid!
-  if (tab) {
+  function collectFromTab() {
+    if (!tab) return;
     const tr = tab.getBoundingClientRect();
     let r = tab;
     for (let depth = 0; depth < 12 && r; depth++, r = parentOf(r)) {
       const rr = r.getBoundingClientRect();
-      if (rr.width > 560) break;
-      const nums = sortedNumericLeaves(r, tr.bottom - 4);
+      if (rr.width > 620) break;
+      let nums = sortedNumericLeaves(r, tr.bottom - 4);
+      if (nums.length < 40) {
+        const rawTxt = (readableText(r) || "").replace(/\s+/g, " ").trim();
+        const idx = rawTxt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
+        const sliced = idx >= 0 ? rawTxt.slice(idx).replace(/^(?:SON|LAST)\s*500\b/i, "") : rawTxt;
+        if (!/%/.test(sliced)) {
+          nums = (sliced.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || []).map(Number);
+        }
+      }
       if (nums.length >= 40 && nums.length <= 650) {
         roots.push({
           root: r,
@@ -8017,6 +8007,21 @@ HISTORY500_SCAN = r"""
         });
       }
     }
+  }
+
+  collectFromTab();
+  if (tab && !roots.length) {
+    try { tab.click(); } catch (_) {}
+    await sleep(350);
+    collectFromTab();
+  }
+
+  // CRITICAL: Only read SON 500 numbers when the SON 500 tab is genuinely visible!
+  // Never read the 430x390 box above OTOMATİK OYUN or whole-page clusters when
+  // the drawer is collapsed, because that captures the 3D wheel (23, 10...) and
+  // the 37-number betting grid!
+  if (tab) {
+    const tr = tab.getBoundingClientRect();
 
     // Tight drawer-bounded rectangle below the SON 500 tab header (never reaching
     // 430px left into the spinning 3D wheel).
@@ -11294,11 +11299,20 @@ class ChromeBridge(threading.Thread):
     def is_roulette_target(self, sid):
         info = self.session_info.get(sid,{})
         txt = (str(info.get("url",""))+" "+str(info.get("title",""))).lower()
-        return (
-            "roulette" in txt
-            or "rulet" in txt
-            or "pragmatic" in txt
-        )
+        if any(
+            x in txt
+            for x in (
+                "roulette", "rulet", "pragmatic", "/desktop/", "/gs2c/game/",
+                "opengames=", "live-casino", "livecasino",
+            )
+        ):
+            return True
+        for ctx in (self.execution_contexts.get(sid) or {}).values():
+            origin = str(ctx.get("origin") or "").lower()
+            name = str(ctx.get("name") or "").lower()
+            if any(x in (origin + " " + name) for x in ("pragmatic", "games.", "client.", "roulette", "rulet")):
+                return True
+        return False
 
     def is_recovery_target(self, sid):
         info = self.session_info.get(sid,{})
@@ -11525,7 +11539,13 @@ class ChromeBridge(threading.Thread):
     def _is_active_session(self, sid):
         if self._is_collector_session(sid):
             return False
-        return (not self.active_game_sid) or sid == self.active_game_sid
+        if (not self.active_game_sid) or sid == self.active_game_sid:
+            return True
+        act = self.session_table_activity.get(sid, {}) or {}
+        tid = str(act.get("table_id", "") or "")
+        if not tid or (self.active_table_id and tid == self.active_table_id):
+            return True
+        return False
 
     def scan_dom_loop(self):
         last_500_scan = {}
@@ -11687,33 +11707,55 @@ class ChromeBridge(threading.Thread):
                             )
 
                     if self.is_roulette_target(sid) and self._is_active_session(sid):
-                        self.send(
-                            "Runtime.evaluate",
-                            {
+                        active_ctx_ids = [None]
+                        for ctx in (self.execution_contexts.get(sid) or {}).values():
+                            cid = ctx.get("id")
+                            aux = ctx.get("auxData") or {}
+                            origin = str(ctx.get("origin") or "").lower()
+                            if cid is None or not bool(aux.get("isDefault", False)):
+                                continue
+                            if not origin.startswith(("http://", "https://")):
+                                continue
+                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
+                                continue
+                            active_ctx_ids.append(int(cid))
+                        active_ctx_ids = list(dict.fromkeys(active_ctx_ids))[:5]
+
+                        for ctx_id in active_ctx_ids:
+                            dom_params = {
                                 "expression": DOM_SCAN,
                                 "returnByValue": True,
                                 "awaitPromise": True,
-                            },
-                            session_id=sid,
-                            kind="domscan",
-                            context=sid,
-                        )
+                            }
+                            if ctx_id is not None:
+                                dom_params["contextId"] = int(ctx_id)
+                            self.send(
+                                "Runtime.evaluate",
+                                dom_params,
+                                session_id=sid,
+                                kind="domscan",
+                                context={"session": sid, "context_id": ctx_id},
+                            )
 
-                        if now - float(last_500_scan.get(sid, 0.0)) >= 6.0:
+                        if now - float(last_500_scan.get(sid, 0.0)) >= 2.5:
                             last_500_scan[sid] = now
                             with self.state.lock:
                                 has_active_500 = len(self.state.table_history_500) >= 40
-                            self.send(
-                                "Runtime.evaluate",
-                                {
+                            for ctx_id in active_ctx_ids:
+                                h500_params = {
                                     "expression": ACTIVE_HISTORY500_SCAN if has_active_500 else HISTORY500_SCAN,
                                     "returnByValue": True,
                                     "awaitPromise": True,
-                                },
-                                session_id=sid,
-                                kind="history500",
-                                context=sid,
-                            )
+                                }
+                                if ctx_id is not None:
+                                    h500_params["contextId"] = int(ctx_id)
+                                self.send(
+                                    "Runtime.evaluate",
+                                    h500_params,
+                                    session_id=sid,
+                                    kind="history500",
+                                    context={"session": sid, "context_id": ctx_id},
+                                )
 
                     # Background bank collection: old/hidden tables are allowed
                     # to feed THEIR OWN tableId archive only. They cannot affect
@@ -13015,16 +13057,21 @@ class ChromeBridge(threading.Thread):
 
             elif kind == "domscan":
                 try:
-                    sid_ctx = context if isinstance(context,str) else ""
+                    sid_ctx = (
+                        str(context.get("session") or "")
+                        if isinstance(context, dict)
+                        else (context if isinstance(context, str) else "")
+                    )
                     if sid_ctx and not self._is_active_session(sid_ctx):
                         return
 
                     value = obj.get("result",{}).get("result",{}).get("value")
                     if isinstance(value,dict):
                         if value.get("lobbyLike"):
-                            with self.state.lock:
-                                if self.state.history:
-                                    self.state.status = "LOBİ AÇIK • masa seçilmesi bekleniyor"
+                            if not self._recent_active_game():
+                                with self.state.lock:
+                                    if self.state.history:
+                                        self.state.status = "LOBİ AÇIK • masa seçilmesi bekleniyor"
                             return
                         title = value.get("title","")
 
@@ -13243,7 +13290,11 @@ class ChromeBridge(threading.Thread):
 
             elif kind == "history500":
                 try:
-                    sid_ctx = context if isinstance(context,str) else ""
+                    sid_ctx = (
+                        str(context.get("session") or "")
+                        if isinstance(context, dict)
+                        else (context if isinstance(context, str) else "")
+                    )
                     if sid_ctx and not self._is_active_session(sid_ctx):
                         return
                     value = obj.get("result",{}).get("result",{}).get("value")
@@ -13259,12 +13310,6 @@ class ChromeBridge(threading.Thread):
                                 nums,
                                 table_name=title
                             )
-
-                            # V2.8.0:
-                            # SON500 is archive/model data only.
-                            # It must NEVER overwrite the visible live SON20.
-                            # Live history is owned exclusively by the proven
-                            # DOM continuity path above.
                 except Exception:
                     pass
             return
