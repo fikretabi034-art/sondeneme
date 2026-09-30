@@ -201,6 +201,43 @@ def wheel_expert(history):
     return normalize_probs(scores)
 
 
+_WHEEL_LR = {
+    n: (
+        EU_WHEEL[(EU_WHEEL.index(n) - 1) % 37],
+        EU_WHEEL[(EU_WHEEL.index(n) + 1) % 37],
+    )
+    for n in range(37)
+}
+_SEQ_PREP_CACHE = {}
+
+
+def _prep_session_seq(session_results):
+    if not session_results:
+        return None
+    n_raw = len(session_results)
+    key = (
+        id(session_results),
+        n_raw,
+        session_results[0] if n_raw else None,
+        session_results[n_raw // 2] if n_raw else None,
+        session_results[-1] if n_raw else None,
+    )
+    cached = _SEQ_PREP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    seq = [int(x) for x in session_results if isinstance(x, int) and 0 <= x <= 36]
+    pos_by_num = [[] for _ in range(37)]
+    for k in range(len(seq) - 1):
+        pos_by_num[seq[k]].append(k)
+    freq = Counter(seq[-2000:])
+    maxf = max(freq.values()) if freq else 1
+    res = (seq, pos_by_num, freq, maxf)
+    if len(_SEQ_PREP_CACHE) > 32:
+        _SEQ_PREP_CACHE.clear()
+    _SEQ_PREP_CACHE[key] = res
+    return res
+
+
 def transition_expert(history, session_results):
     """
     V1.7.4 WEB HISTORY FUSION
@@ -215,58 +252,46 @@ def transition_expert(history, session_results):
     """
     scores = {n: 0.45 for n in range(37)}
     hist = [int(x) for x in history if isinstance(x, int) and 0 <= x <= 36]
-    seq = [int(x) for x in session_results if isinstance(x, int) and 0 <= x <= 36]
+    prep = _prep_session_seq(session_results)
 
-    if not hist or len(seq) < 3:
+    if not hist or not prep or len(prep[0]) < 3:
         return normalize_probs(scores)
 
+    seq, pos_by_num, freq, maxf = prep
     current = hist[0]
     nseq = len(seq)
+    has2 = len(hist) >= 2 and nseq >= 3
+    prev = hist[1] if has2 else -99
+    has3 = len(hist) >= 3 and nseq >= 4
+    p2 = hist[2] if has3 else -99
 
-    # Exact current-number transitions over full recorded history.
-    exact_obs = 0
-    for i, (a, b) in enumerate(zip(seq[:-1], seq[1:])):
-        if a == current:
-            age = (nseq - 2) - i
-            rec = 1.0 / (1.0 + age / 180.0)
-            scores[b] += 2.9 + 1.5 * rec
-            exact_obs += 1
-            bi = EU_WHEEL.index(b)
-            scores[EU_WHEEL[(bi-1) % 37]] += 0.16
-            scores[EU_WHEEL[(bi+1) % 37]] += 0.16
-
-    # Two-number pattern: previous,current -> next.
-    pair_obs = 0
-    if len(hist) >= 2 and len(seq) >= 3:
-        prev = hist[1]
-        for i, (a, b, c) in enumerate(zip(seq[:-2], seq[1:-1], seq[2:])):
-            if a == prev and b == current:
-                age = (nseq - 3) - i
-                rec = 1.0 / (1.0 + age / 220.0)
-                scores[c] += 5.2 + 2.0 * rec
-                pair_obs += 1
-
-    # Three-number pattern when actually seen before.
-    if len(hist) >= 3 and len(seq) >= 4:
-        p2, p1 = hist[2], hist[1]
-        for i, (a, b, c, d) in enumerate(zip(seq[:-3], seq[1:-2], seq[2:-1], seq[3:])):
-            if a == p2 and b == p1 and c == current:
-                age = (nseq - 4) - i
-                rec = 1.0 / (1.0 + age / 260.0)
-                scores[d] += 7.5 + 2.5 * rec
+    positions = pos_by_num[current]
+    exact_obs = len(positions)
+    for k in positions:
+        b = seq[k + 1]
+        age = (nseq - 2) - k
+        rec = 1.0 / (1.0 + age / 180.0)
+        scores[b] += 2.9 + 1.5 * rec
+        left_n, right_n = _WHEEL_LR[b]
+        scores[left_n] += 0.16
+        scores[right_n] += 0.16
+        if has2 and k >= 1 and seq[k - 1] == prev:
+            rec2 = 1.0 / (1.0 + age / 220.0)
+            scores[b] += 5.2 + 2.0 * rec2
+            if has3 and k >= 2 and seq[k - 2] == p2:
+                rec3 = 1.0 / (1.0 + age / 260.0)
+                scores[b] += 7.5 + 2.5 * rec3
 
     # Sparse fallback: what followed pockets physically close to current.
     if exact_obs < 4:
-        current_neigh = set(wheel_neighbors(current, 2))
-        for i, (a, b) in enumerate(zip(seq[:-1], seq[1:])):
-            if a in current_neigh:
-                age = (nseq - 2) - i
+        for nb in set(wheel_neighbors(current, 2)):
+            for k in pos_by_num[nb]:
+                b = seq[k + 1]
+                age = (nseq - 2) - k
                 rec = 1.0 / (1.0 + age / 150.0)
                 scores[b] += 0.16 + 0.18 * rec
 
     # Long-term frequency gets a tiny stabilizing vote, never dominates.
-    freq = Counter(seq[-2000:])
-    maxf = max(freq.values()) if freq else 1
     for n, c in freq.items():
         scores[n] += 0.30 * (c / maxf)
 
@@ -459,6 +484,59 @@ def web_matches_table(table500, candidate):
     return run >= 8, run
 
 
+_EXT_PREP_CACHE = {}
+_EXT_WEB_CACHE = {}
+_EXT_SNAP_CACHE = {}
+
+
+def _prep_external_seq(external_newest):
+    if not external_newest:
+        return None
+    n_raw = len(external_newest)
+    key = (
+        id(external_newest),
+        n_raw,
+        external_newest[0] if n_raw else None,
+        external_newest[n_raw // 2] if n_raw else None,
+        external_newest[-1] if n_raw else None,
+    )
+    cached = _EXT_PREP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    ext = [
+        int(x) for x in external_newest[:150000]
+        if isinstance(x, int) and -1 <= x <= 36
+    ]
+    valid_spins = 0
+    tables_count = 0
+    in_seg = False
+    head_120 = []
+    for x in ext:
+        if 0 <= x <= 36:
+            valid_spins += 1
+            if len(head_120) < 120:
+                head_120.append(x)
+            if not in_seg:
+                tables_count += 1
+                in_seg = True
+        else:
+            in_seg = False
+    seq = list(reversed(ext))
+    pos_by_num = [[] for _ in range(37)]
+    limit = len(seq) - 1
+    for i in range(limit):
+        v = seq[i]
+        if 0 <= v <= 36 and 0 <= seq[i + 1] <= 36:
+            pos_by_num[v].append(i)
+    res = (key, ext, seq, valid_spins, tables_count, head_120, pos_by_num)
+    if len(_EXT_PREP_CACHE) > 32:
+        _EXT_PREP_CACHE.clear()
+        _EXT_WEB_CACHE.clear()
+        _EXT_SNAP_CACHE.clear()
+    _EXT_PREP_CACHE[key] = res
+    return res
+
+
 def external_web_expert(history, external_newest):
     """
     Public-history / multi-table archive expert. It uses observed results as
@@ -468,48 +546,48 @@ def external_web_expert(history, external_newest):
     """
     scores = {n: 0.42 for n in range(37)}
     hist = [int(x) for x in history if isinstance(x, int) and 0 <= x <= 36]
-    ext_new = [
-        int(x) for x in (external_newest or [])
-        if isinstance(x, int) and -1 <= x <= 36
-    ][:150000]
-    valid_spins = [x for x in ext_new if 0 <= x <= 36]
-    if not hist or len(valid_spins) < 10:
+    prep = _prep_external_seq(external_newest)
+    if not hist or not prep or prep[3] < 10:
         return normalize_probs(scores)
 
-    seq = list(reversed(ext_new))  # chronological within each table (-1 separates tables)
+    prep_key, _ext, seq, _valid_spins, _tables_count, head_120, pos_by_num = prep
+    cache_key = (prep_key, tuple(hist[:3]))
+    cached_dist = _EXT_WEB_CACHE.get(cache_key)
+    if cached_dist is not None:
+        return dict(cached_dist)
+
     current = hist[0]
+    has2 = len(hist) >= 2
+    prev = hist[1] if has2 else -99
+    has3 = len(hist) >= 3
+    p2 = hist[2] if has3 else -99
 
-    exact_obs = 0
-    for a, b in zip(seq[:-1], seq[1:]):
-        if a == current and 0 <= b <= 36:
-            scores[b] += 4.2
-            exact_obs += 1
-
-    if len(hist) >= 2:
-        prev = hist[1]
-        for a, b, c in zip(seq[:-2], seq[1:-1], seq[2:]):
-            if a == prev and b == current and 0 <= c <= 36:
-                scores[c] += 7.0
-
-    if len(hist) >= 3:
-        p2, prev = hist[2], hist[1]
-        for a, b, c, d in zip(seq[:-3], seq[1:-2], seq[2:-1], seq[3:]):
-            if a == p2 and b == prev and c == current and 0 <= d <= 36:
-                scores[d] += 9.5
+    positions = pos_by_num[current]
+    exact_obs = len(positions)
+    for i in positions:
+        b = seq[i + 1]
+        scores[b] += 4.2
+        if has2 and i >= 1 and seq[i - 1] == prev:
+            scores[b] += 7.0
+            if has3 and i >= 2 and seq[i - 2] == p2:
+                scores[b] += 9.5
 
     # If exact current transitions are sparse, use transitions from physical
     # neighbours of the current pocket with a much smaller vote.
     if exact_obs < 3:
-        neigh = set(wheel_neighbors(current, 2))
-        for a, b in zip(seq[:-1], seq[1:]):
-            if 0 <= a <= 36 and 0 <= b <= 36 and a in neigh:
-                scores[b] += 0.55
+        for nb in set(wheel_neighbors(current, 2)):
+            for i in pos_by_num[nb]:
+                scores[seq[i + 1]] += 0.55
 
     # Recent frequency is only a stabilizer, not a 'due' rule.
-    for idx, n in enumerate(valid_spins[:120]):
+    for idx, n in enumerate(head_120):
         scores[n] += 0.30 / (1.0 + idx * 0.035)
 
-    return normalize_probs(scores)
+    out = normalize_probs(scores)
+    if len(_EXT_WEB_CACHE) > 64:
+        _EXT_WEB_CACHE.clear()
+    _EXT_WEB_CACHE[cache_key] = dict(out)
+    return out
 
 
 def external_transition_snapshot(history, external_newest):
@@ -518,21 +596,9 @@ def external_transition_snapshot(history, external_newest):
     archive or the combined multi-table pool (-1 separates tables).
     """
     hist = [int(x) for x in (history or []) if isinstance(x, int) and 0 <= x <= 36]
-    ext = [
-        int(x) for x in (external_newest or [])
-        if isinstance(x, int) and -1 <= x <= 36
-    ][:150000]
-    valid_spins = sum(1 for x in ext if 0 <= x <= 36)
-
-    tables_count = 0
-    in_seg = False
-    for x in ext:
-        if 0 <= x <= 36:
-            if not in_seg:
-                tables_count += 1
-                in_seg = True
-        else:
-            in_seg = False
+    prep = _prep_external_seq(external_newest)
+    valid_spins = prep[3] if prep else 0
+    tables_count = prep[4] if prep else 0
 
     cur = hist[0] if hist else None
     prev = hist[1] if len(hist) >= 2 else None
@@ -553,18 +619,21 @@ def external_transition_snapshot(history, external_newest):
             'pair_probs': {},
         }
 
-    seq = list(reversed(ext))
-    exact = Counter(
-        b for a, b in zip(seq[:-1], seq[1:])
-        if a == cur and 0 <= b <= 36
-    )
-    exact_obs = sum(exact.values())
+    prep_key, _ext, seq, _valid_spins, _tables_count, _head_120, pos_by_num = prep
+    cache_key = (prep_key, tuple(hist[:2]))
+    cached_snap = _EXT_SNAP_CACHE.get(cache_key)
+    if cached_snap is not None:
+        return dict(cached_snap)
 
+    exact = Counter()
     pair = Counter()
-    if len(hist) >= 2:
-        for a, b, c in zip(seq[:-2], seq[1:-1], seq[2:]):
-            if a == prev and b == cur and 0 <= c <= 36:
-                pair[c] += 1
+    has2 = len(hist) >= 2
+    for i in pos_by_num[cur]:
+        b = seq[i + 1]
+        exact[b] += 1
+        if has2 and i >= 1 and seq[i - 1] == prev:
+            pair[b] += 1
+    exact_obs = sum(exact.values())
     pair_obs = sum(pair.values())
 
     exact_sorted = sorted(
@@ -595,7 +664,7 @@ def external_transition_snapshot(history, external_newest):
         if pair_obs else {}
     )
 
-    return {
+    out = {
         'spins': valid_spins,
         'tables': max(1, tables_count) if valid_spins else 0,
         'current': cur,
@@ -609,6 +678,10 @@ def external_transition_snapshot(history, external_newest):
         'pair_top_pct': pair_top_pct,
         'pair_probs': pair_probs,
     }
+    if len(_EXT_SNAP_CACHE) > 64:
+        _EXT_SNAP_CACHE.clear()
+    _EXT_SNAP_CACHE[cache_key] = dict(out)
+    return out
 
 
 def multi_table_transition_expert(history, pool_newest):
@@ -1243,7 +1316,13 @@ class RawWebSocket:
                 hdr = bytes([0x80 | (opcode & 0x0F), 0x80 | 126]) + struct.pack("!H", n)
             else:
                 hdr = bytes([0x80 | (opcode & 0x0F), 0x80 | 127]) + struct.pack("!Q", n)
-            masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if n:
+                rep_mask = (mask * ((n // 4) + 1))[:n]
+                masked = (
+                    int.from_bytes(payload, "big") ^ int.from_bytes(rep_mask, "big")
+                ).to_bytes(n, "big")
+            else:
+                masked = b""
             self.sock.sendall(hdr + mask + masked)
 
     def send_text(self, text):
@@ -1886,6 +1965,9 @@ def _wf_current_distributions(history, chronological_train, long_newest):
     }
 
 
+_WF_PROFILE_CACHE = {}
+
+
 def walk_forward_profile(long_newest, max_trials=220, min_train=120):
     """
     Chronological, no-peeking evaluation on the SAME tableId archive.
@@ -1911,6 +1993,17 @@ def walk_forward_profile(long_newest, max_trials=220, min_train=120):
             "experts": {},
         }
 
+    wf_key = (
+        len(clean_new),
+        tuple(clean_new[:8]),
+        tuple(clean_new[-8:]),
+        int(max_trials),
+        int(min_train),
+    )
+    cached_wf = _WF_PROFILE_CACHE.get(wf_key)
+    if cached_wf is not None:
+        return dict(cached_wf)
+
     # Bound compute cost while keeping the newest relevant same-table archive.
     seq = list(reversed(clean_new[:3000]))  # chronological
     start = max(min_train, len(seq) - max_trials)
@@ -1921,15 +2014,88 @@ def walk_forward_profile(long_newest, max_trials=220, min_train=120):
     }
     ensemble = {"trials": 0, "exact": 0, "top5": 0}
 
-    for t in range(start, len(seq)):
-        prefix = seq[:t]
-        if len(prefix) < min_train:
-            continue
-        actual = int(seq[t])
-        history = list(reversed(prefix[-20:]))
-        train_newest = list(reversed(prefix[-2000:]))
+    pos_by_num = [[] for _ in range(37)]
+    for k in range(start - 1):
+        pos_by_num[seq[k]].append(k)
+    freq = Counter(seq[max(0, start - 2000):start])
 
-        dists = _wf_current_distributions(history, prefix, train_newest)
+    for t in range(start, len(seq)):
+        if t < min_train:
+            continue
+        if t > start:
+            pos_by_num[seq[t - 2]].append(t - 2)
+            freq[seq[t - 1]] += 1
+            if t - 1 >= 2000:
+                old_v = seq[t - 1 - 2000]
+                freq[old_v] -= 1
+                if freq[old_v] <= 0:
+                    del freq[old_v]
+
+        actual = int(seq[t])
+        history = [seq[i] for i in range(t - 1, max(-1, t - 21), -1)]
+        current = history[0]
+        has2 = len(history) >= 2 and t >= 3
+        prev = history[1] if has2 else -99
+        has3 = len(history) >= 3 and t >= 4
+        p2 = history[2] if has3 else -99
+
+        t_scores = {n: 0.45 for n in range(37)}
+        positions = pos_by_num[current]
+        exact_obs_t = len(positions)
+        for k in positions:
+            b = seq[k + 1]
+            age = (t - 2) - k
+            rec = 1.0 / (1.0 + age / 180.0)
+            t_scores[b] += 2.9 + 1.5 * rec
+            ln, rn = _WHEEL_LR[b]
+            t_scores[ln] += 0.16
+            t_scores[rn] += 0.16
+            if has2 and k >= 1 and seq[k - 1] == prev:
+                rec2 = 1.0 / (1.0 + age / 220.0)
+                t_scores[b] += 5.2 + 2.0 * rec2
+                if has3 and k >= 2 and seq[k - 2] == p2:
+                    rec3 = 1.0 / (1.0 + age / 260.0)
+                    t_scores[b] += 7.5 + 2.5 * rec3
+        if exact_obs_t < 4:
+            for nb in set(wheel_neighbors(current, 2)):
+                for k in pos_by_num[nb]:
+                    b = seq[k + 1]
+                    age = (t - 2) - k
+                    rec = 1.0 / (1.0 + age / 150.0)
+                    t_scores[b] += 0.16 + 0.18 * rec
+        maxf = max(freq.values()) if freq else 1
+        for n, c in freq.items():
+            t_scores[n] += 0.30 * (c / maxf)
+        trans_dist = normalize_probs(t_scores)
+
+        w_scores = {n: 0.42 for n in range(37)}
+        w_min = max(0, t - 2000)
+        exact_obs_w = 0
+        for k in positions:
+            if k < w_min:
+                continue
+            b = seq[k + 1]
+            w_scores[b] += 4.2
+            exact_obs_w += 1
+            if has2 and k >= w_min + 1 and seq[k - 1] == prev:
+                w_scores[b] += 7.0
+                if has3 and k >= w_min + 2 and seq[k - 2] == p2:
+                    w_scores[b] += 9.5
+        if exact_obs_w < 3:
+            for nb in set(wheel_neighbors(current, 2)):
+                for k in pos_by_num[nb]:
+                    if k >= w_min:
+                        w_scores[seq[k + 1]] += 0.55
+        for idx in range(min(120, t - w_min)):
+            w_scores[seq[t - 1 - idx]] += 0.30 / (1.0 + idx * 0.035)
+        long_dist = normalize_probs(w_scores)
+
+        dists = {
+            "RECENCY": recency_expert(history),
+            "WHEEL": wheel_expert(history),
+            "TRANSITION": trans_dist,
+            "LONG": long_dist,
+        }
 
         # Ensemble weights use only earlier scored walk-forward trials.
         weights = _wf_weights(stats)
@@ -1983,7 +2149,7 @@ def walk_forward_profile(long_newest, max_trials=220, min_train=120):
             "top5_rate": (st["top5"] / tn * 100.0) if tn else 0.0,
         }
 
-    return {
+    res_wf = {
         "trials": n,
         "exact": ex,
         "top5": h5,
@@ -1997,6 +2163,10 @@ def walk_forward_profile(long_newest, max_trials=220, min_train=120):
         "weights": _wf_weights(stats),
         "experts": expert_view,
     }
+    if len(_WF_PROFILE_CACHE) > 24:
+        _WF_PROFILE_CACHE.clear()
+    _WF_PROFILE_CACHE[wf_key] = dict(res_wf)
+    return res_wf
 
 
 def apply_walk_forward_model(pred, history, session_results, table_long_newest, profile):
@@ -5072,6 +5242,7 @@ class RouletteState:
         source="",
         theme_code="",
         operator_game_id="",
+        save_disk=True,
     ):
         tid = str(table_id or "").strip()
         if not tid:
@@ -5103,7 +5274,9 @@ class RouletteState:
         row["refresh_count"] = int(row.get("refresh_count", 0) or 0) + 1
         row.pop("last_error", None)
         self.table_registry[tid] = row
-        self._save_table_registry()
+        self._cached_bank_rows_ts = 0.0
+        if save_disk:
+            self._save_table_registry()
         self.background_status = self._bank_status_text()
 
     def _saved_table500(self, identity):
@@ -5188,75 +5361,59 @@ class RouletteState:
             "_",
             tid,
         ).strip("_")
+        key = safe_table_key(identity)
 
         with self.lock:
-            key = safe_table_key(identity)
+            previous = list(self._memory_table500.get(key) or [])
+            long_hist = list(self._pool_memory_tables.get(key) or [])
+
+        if not previous:
             previous = self._saved_table500(identity)
-            long_hist = self._pool_memory_tables.get(key)
-            if not long_hist:
-                long_hist = load_table_long_archive(
-                    self.data_dir,
-                    identity,
-                )
-            ref_window = long_hist[:500] if long_hist else previous
-            clean = self._normalize_background_window(clean, ref_window)
+        if not long_hist:
+            long_hist = load_table_long_archive(
+                self.data_dir,
+                identity,
+            )
 
-            dirty_long = False
-            if not long_hist:
-                long_hist = sanitize_long_archive(clean)
-                added = list(long_hist)
+        ref_window = long_hist[:500] if long_hist else previous
+        clean = self._normalize_background_window(clean, ref_window)
+
+        dirty_long = False
+        if not long_hist:
+            long_hist = sanitize_long_archive(clean)
+            added = list(long_hist)
+            dirty_long = True
+        else:
+            added = detect_new_front_large(
+                long_hist[:500],
+                clean,
+                max_new=500,
+            )
+            if added:
+                long_hist = sanitize_long_archive(list(added) + list(long_hist))
                 dirty_long = True
-            else:
-                added = detect_new_front_large(
-                    long_hist[:500],
-                    clean,
-                    max_new=500,
-                )
-                if added:
-                    long_hist = sanitize_long_archive(list(added) + list(long_hist))
-                    dirty_long = True
 
-            if dirty_long:
-                save_table_long_archive(self.data_dir, identity, long_hist)
+        # Never overwrite a 500-spin file with a 20-spin DGA frame.
+        if len(clean) >= len(previous):
+            new_500 = list(clean[:500])
+        elif added:
+            new_500 = (list(added) + list(previous))[:500]
+        else:
+            new_500 = list(previous)
+        dirty_500 = new_500 != previous
+
+        with self.lock:
             if identity == str(self.table_long_table or ""):
                 self.table_long_history = list(long_hist)
-
-            # Never overwrite a 500-spin file with a 20-spin DGA frame.
-            if len(clean) >= len(previous):
-                new_500 = list(clean[:500])
-            elif added:
-                new_500 = (list(added) + list(previous))[:500]
-            else:
-                new_500 = list(previous)
-
-            if new_500 != previous:
+            if dirty_500:
                 self._memory_table500[key] = list(new_500)
-                try:
-                    path = os.path.join(
-                        self.data_dir,
-                        f"table_history500_{key}.json",
-                    )
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(
-                            {
-                                "table": identity,
-                                "table_id": tid,
-                                "display_name": display_name,
-                                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                "results_newest_first": new_500,
-                            },
-                            f,
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                except Exception:
-                    pass
 
             self._update_table_registry(
                 tid,
                 display_name=display_name,
                 long_count=len(long_hist),
                 source=source_label,
+                save_disk=False,
             )
 
             self._pool_memory_tables[key] = list(long_hist)
@@ -5273,10 +5430,39 @@ class RouletteState:
                 f"arka plan {short_name}"
                 + (f" +{len(added)}" if added else "")
             )
-            return len(added)
+
+        if dirty_long:
+            save_table_long_archive(self.data_dir, identity, long_hist)
+        if dirty_500:
+            try:
+                path = os.path.join(
+                    self.data_dir,
+                    f"table_history500_{key}.json",
+                )
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "table": identity,
+                            "table_id": tid,
+                            "display_name": display_name,
+                            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "results_newest_first": new_500,
+                        },
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+            except Exception:
+                pass
+        self._save_table_registry()
+        return len(added)
 
     def table_bank_rows(self):
         now = time.time()
+        cached_ts = float(getattr(self, "_cached_bank_rows_ts", 0.0) or 0.0)
+        cached_rows = getattr(self, "_cached_bank_rows", None)
+        if cached_rows is not None and now - cached_ts < 1.0:
+            return list(cached_rows)
         out = []
         for tid, raw in (self.table_registry or {}).items():
             row = dict(raw or {})
@@ -5303,6 +5489,8 @@ class RouletteState:
                 "age": age if age is not None else 10**12,
             })
         out.sort(key=lambda row: (row["age"], row["display_name"].lower()))
+        self._cached_bank_rows = list(out)
+        self._cached_bank_rows_ts = now
         return out
 
 
@@ -5327,6 +5515,8 @@ class RouletteState:
             return
 
         clean = clean[:500]
+        save_long_copy = None
+        save_500_copy = None
 
         with self.lock:
             incoming_table = str(self._storage_identity(table_name or self.table_name or ""))
@@ -5335,13 +5525,17 @@ class RouletteState:
                 or incoming_table == str(self.table_history_table or "")
             )
             current = list(self.history[:20]) if same_table else []
+            table_changed = incoming_table != str(self.table_long_table or "")
 
             # Switch/load the long archive when table changes.
-            if incoming_table != str(self.table_long_table or ""):
+            if table_changed:
                 self.table_long_table = incoming_table
-                self.table_long_history = load_table_long_archive(
-                    self.data_dir,
-                    incoming_table
+                key_in = safe_table_key(incoming_table)
+                mem_long = self._pool_memory_tables.get(key_in)
+                self.table_long_history = (
+                    list(mem_long)
+                    if mem_long
+                    else load_table_long_archive(self.data_dir, incoming_table)
                 )
                 previous_500 = self._saved_table500(incoming_table)
             else:
@@ -5377,25 +5571,31 @@ class RouletteState:
                 max_new=500,
             )
 
+            dirty_long = False
             # First capture: seed long archive with all visible SON500 only if
             # no long archive exists yet. Later captures add only new results.
             if not self.table_long_history:
                 self.table_long_history = sanitize_long_archive(clean)
                 added_count = len(self.table_long_history)
+                dirty_long = True
             else:
                 added = list(new_front)
                 if added:
                     self.table_long_history = sanitize_long_archive(
                         added + self.table_long_history
                     )
+                    dirty_long = True
                 elif len(clean) >= 100 and clean[:20] != self.table_long_history[:20]:
-                    self.table_long_history = sanitize_long_archive(
+                    prev_long_len = len(self.table_long_history)
+                    merged_long = sanitize_long_archive(
                         list(clean) + list(self.table_long_history)
                     )
-                else:
-                    self.table_long_history = sanitize_long_archive(self.table_long_history)
+                    if merged_long != self.table_long_history:
+                        self.table_long_history = merged_long
+                        dirty_long = True
                 added_count = len(added)
 
+            dirty_500 = clean != previous_500
             self.table_history_500 = clean
             self.table_history_table = incoming_table
             self.table_history_last_update = time.time()
@@ -5405,35 +5605,20 @@ class RouletteState:
                 + (f" (+{added_count})" if added_count else "")
             )
 
-            save_table_long_archive(
-                self.data_dir,
-                incoming_table,
-                self.table_long_history
-            )
-            if len(clean) >= len(previous_500):
-                try:
-                    key500 = safe_table_key(incoming_table)
-                    p500 = os.path.join(self.data_dir, f"table_history500_{key500}.json")
-                    with open(p500, "w", encoding="utf-8") as f5:
-                        json.dump(
-                            {
-                                "table": incoming_table,
-                                "table_id": self.pragmatic_table_id,
-                                "display_name": table_name or self.table_name,
-                                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                "results_newest_first": clean[:500],
-                            },
-                            f5,
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                except Exception:
-                    pass
-            self._pool_memory_tables[safe_table_key(incoming_table)] = list(self.table_long_history)
-            self._pool_dirty = True
-            self.walkforward_cache_key = None
+            key500 = safe_table_key(incoming_table or "roulette")
+            if dirty_500:
+                self._memory_table500[key500] = list(clean[:500])
+                save_500_copy = list(clean[:500])
+            if dirty_long:
+                save_long_copy = list(self.table_long_history)
+                self._pool_memory_tables[key500] = list(self.table_long_history)
+                self._pool_dirty = True
+                self.walkforward_cache_key = None
+            elif table_changed:
+                self._pool_memory_tables[key500] = list(self.table_long_history)
+                self.walkforward_cache_key = None
 
-            if self.pragmatic_table_id:
+            if self.pragmatic_table_id and (dirty_long or dirty_500 or table_changed):
                 self._update_table_registry(
                     self.pragmatic_table_id,
                     display_name=table_name or self.table_name,
@@ -5441,6 +5626,7 @@ class RouletteState:
                     source="AKTİF SON500",
                     theme_code=self.pragmatic_theme_code,
                     operator_game_id=self.pragmatic_operator_game_id,
+                    save_disk=False,
                 )
 
             # If normal live-history DOM is still empty, bootstrap current view.
@@ -5469,38 +5655,10 @@ class RouletteState:
                 self._try_load_learning(self.table_name, self.history)
                 self._refresh_imported_history(force=True)
 
-            # Persist current sliding window too.
-            try:
-                key = safe_table_key(incoming_table or "roulette")
-                path = os.path.join(
-                    self.data_dir,
-                    f"table_history500_{key}.json"
-                )
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {
-                            "table": incoming_table,
-                            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "results_newest_first": clean,
-                        },
-                        f,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-            except Exception:
-                pass
-
             if self.history and verified_live_new:
                 # Safe catch-up:
                 # SON500 is NOT replacing history. It only proved that these
                 # exact new numbers were prepended to the current live head.
-                #
-                # Example:
-                # app:    27,32,10,20,...
-                # SON500: 25,14,27,32,10,20,...
-                # => verified_live_new = [25,14]
-                #
-                # Replay chronologically: 14 happened, then 25.
                 temp_hist = list(self.history)
 
                 for actual in reversed(verified_live_new):
@@ -5526,8 +5684,35 @@ class RouletteState:
                 self.pending_prediction = self._make_prediction(self.history)
                 self._save_learning()
 
-            elif self.history:
+            elif self.history and (dirty_long or dirty_500 or table_changed or self.pending_prediction is None):
                 self.pending_prediction = self._make_prediction(self.history)
+
+        if save_long_copy is not None:
+            save_table_long_archive(
+                self.data_dir,
+                incoming_table,
+                save_long_copy,
+            )
+        if save_500_copy is not None:
+            try:
+                p500 = os.path.join(self.data_dir, f"table_history500_{key500}.json")
+                with open(p500, "w", encoding="utf-8") as f5:
+                    json.dump(
+                        {
+                            "table": incoming_table,
+                            "table_id": self.pragmatic_table_id,
+                            "display_name": table_name or self.table_name,
+                            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "results_newest_first": save_500_copy,
+                        },
+                        f5,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+            except Exception:
+                pass
+        if save_long_copy is not None or save_500_copy is not None:
+            self._save_table_registry()
 
     def update_direct_pragmatic_history(
         self,
@@ -5544,34 +5729,37 @@ class RouletteState:
             return 0
         with self.lock:
             active = str(self.pragmatic_table_id or "").strip()
-            if active and tid != active:
-                return self.store_background_table_history(
-                    results,
-                    table_id=tid,
-                    display_name=title,
-                    source_label="ARKA PLAN statisticHistory",
-                )
+            is_bg = bool(active and tid != active)
+        if is_bg:
+            return self.store_background_table_history(
+                results,
+                table_id=tid,
+                display_name=title,
+                source_label="ARKA PLAN statisticHistory",
+            )
+        clean = [
+            int(x) for x in (results or [])
+            if isinstance(x, int) and 0 <= x <= 36
+        ][:500]
+        if len(clean) < 20:
+            return 0
+        with self.lock:
             self.set_pragmatic_identity(
                 tid,
                 operator_game_id=operator_game_id,
                 theme_code=theme_code,
                 title=title,
             )
-            clean = [
-                int(x) for x in (results or [])
-                if isinstance(x, int) and 0 <= x <= 36
-            ][:500]
-            if len(clean) < 20:
-                return 0
             self.direct_history_count = len(clean)
             self.direct_history_last_update = time.time()
             self.direct_history_status = f"PRAGMATIC DIRECT: {len(clean)}/500"
-            self.update_table_history_500(
-                clean,
-                table_name=title or self.table_name,
-                source_label=source,
-            )
-            return len(clean)
+            fallback_title = title or self.table_name
+        self.update_table_history_500(
+            clean,
+            table_name=fallback_title,
+            source_label=source,
+        )
+        return len(clean)
 
     def update_validated_public_history(self, recent_newest, table_name="", label=""):
         clean = [int(x) for x in (recent_newest or []) if isinstance(x,int) and 0 <= x <= 36]
@@ -6421,7 +6609,27 @@ class RouletteState:
             return
 
         with self.lock:
-            incoming_table = str(table_name or self.table_name or "")
+            raw_table = str(table_name or "").strip()
+            norm_raw = raw_table.lower()
+            is_generic_title = (
+                not norm_raw
+                or norm_raw in (
+                    "roulette",
+                    "rulet",
+                    "pragmatic play",
+                    "pragmatic play live",
+                    "pragmatic play lobby",
+                    "live casino",
+                    "canlı casino",
+                    "canli casino",
+                )
+                or "lobby" in norm_raw
+                or "lobi" in norm_raw
+            )
+            if self.table_name and is_generic_title:
+                incoming_table = str(self.table_name)
+            else:
+                incoming_table = str(raw_table or self.table_name or "")
 
             # First usable data.
             if not self.history:
@@ -6432,10 +6640,13 @@ class RouletteState:
                 self._try_load_learning(self.table_name, self.history)
             else:
                 # If table actually changes, do not mix its learned transitions.
+                # When pragmatic_table_id is locked, real table switches go through
+                # set_pragmatic_identity; do not reset on wrapper title changes.
                 if (
                     incoming_table
                     and self.table_name
                     and incoming_table != self.table_name
+                    and not self.pragmatic_table_id
                 ):
                     # Save the old table before switching; each table now owns
                     # its own long-term history brain.
@@ -6485,8 +6696,8 @@ class RouletteState:
                     int(x) for x in cold
                     if str(x).isdigit() and 0 <= int(x) <= 36
                 ][:5]
-            if table_name:
-                self.table_name = str(table_name)
+            if raw_table and (not self.table_name or not is_generic_title):
+                self.table_name = raw_table
 
             self.source = source
             self.roulette_seen = True
@@ -6539,11 +6750,9 @@ class RouletteState:
             ]
             cold_calc = [n for n in range(37) if n not in freq][:5]
 
-            pred = (
-                self.pending_prediction
-                if self.pending_prediction is not None
-                else self._make_prediction(h)
-            )
+            if self.pending_prediction is None:
+                self.pending_prediction = self._make_prediction(h)
+            pred = self.pending_prediction
 
             watch = [
                 (n, pred["combined"][n])
@@ -6837,6 +7046,41 @@ DOM_SCAN = r"""
            s.display !== "none" && s.visibility !== "hidden";
   }
 
+  const bodyText = ((document.body && document.body.innerText) || "")
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+  const hasActiveGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|VOISINS|ORPHELINS|TIERS|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY|\bSON\s*500\b|\bLAST\s*500\b/.test(bodyText);
+  const tileSel = '[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"],[data-testid*="tile" i],[class*="tile" i]';
+  let lobbyCards = 0;
+  if (!hasActiveGameUi) {
+    const seenCards = new Set();
+    for (const el of document.querySelectorAll(tileSel)) {
+      if (!vis(el)) continue;
+      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toUpperCase();
+      const hasId = !!(el.getAttribute("data-gameid") || el.getAttribute("data-game-id") || el.getAttribute("data-table-id") || el.getAttribute("data-tableid"));
+      if (!hasId && !/(ROULETTE|RULET)/.test(t)) continue;
+      const k = (t.slice(0, 60) + "|" + (el.getAttribute("data-gameid") || el.getAttribute("data-table-id") || "")).slice(0, 100);
+      if (seenCards.has(k)) continue;
+      seenCards.add(k);
+      lobbyCards += 1;
+      if (lobbyCards >= 3) break;
+    }
+  }
+  const lobbyLike = !hasActiveGameUi && (
+    lobbyCards >= 3 ||
+    /\/lobby/i.test(location.pathname || "") ||
+    /pragmatic\s*play\s*lobby/i.test(document.title || "")
+  );
+  if (lobbyLike) {
+    return {
+      title: document.title,
+      url: location.href,
+      lobbyLike: true,
+      candidates: [],
+      liveCandidates: []
+    };
+  }
+
   const selectors = [
     '[data-testid*="history"]',
     '[data-testid*="result"]',
@@ -6854,7 +7098,9 @@ DOM_SCAN = r"""
 
   for (const sel of selectors) {
     for (const el of document.querySelectorAll(sel)) {
-      if (!vis(el) || seen.has(el)) continue;
+      if (seen.has(el)) continue;
+      if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
+      if (!vis(el)) continue;
       seen.add(el);
 
       const txt = (el.innerText || el.textContent || "")
@@ -6879,10 +7125,12 @@ DOM_SCAN = r"""
   // statistic cells are deliberately penalized.
   const liveCandidates = [];
   const exactNumber = /^(?:[0-9]|[12][0-9]|3[0-6])$/;
-  for (const el of document.querySelectorAll('*')) {
-    const text = (el.textContent || '').trim();
+  for (const el of document.querySelectorAll('div,span,p,strong,b')) {
+    if (el.children && el.children.length > 0) continue;
+    const rawText = el.textContent || '';
+    if (rawText.length === 0 || rawText.length > 6) continue;
+    const text = rawText.trim();
     if (!exactNumber.test(text) || !vis(el)) continue;
-    if ([...el.children].some(ch => exactNumber.test((ch.textContent || '').trim()))) continue;
 
     const r = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -6901,7 +7149,7 @@ DOM_SCAN = r"""
     else if (font >= 24) score += 25;
     if (r.width >= 35 && r.height >= 35 && r.width <= 180 && r.height <= 180) score += 25;
     if (/(winner|winning|outcome|result|last.?number|number.?display)/i.test(hint)) score += 45;
-    if (/(chip|bet|history|recent|statistic|hot|cold|limit|balance|stake|racetrack)/i.test(hint)) score -= 80;
+    if (/(chip|bet|history|recent|statistic|hot|cold|limit|balance|stake|racetrack|tile|card)/i.test(hint)) score -= 80;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     if (cx > innerWidth * 0.25 && cx < innerWidth * 0.75 && cy < innerHeight * 0.82) score += 10;
@@ -6920,6 +7168,7 @@ DOM_SCAN = r"""
   return {
     title: document.title,
     url: location.href,
+    lobbyLike: false,
     candidates: out,
     liveCandidates: liveCandidates.slice(0, 5)
   };
@@ -7198,14 +7447,53 @@ HISTORY500_SCAN = r"""
     }
   }
 
+  const lobbyTileSelector = [
+    '[data-gameid]','[data-game-id]','[data-table-id]','[data-tableid]',
+    '[data-testid="wow-tile"]','[data-testid*="tile" i]',
+    '[data-testid*="game" i]','[data-testid*="table" i]',
+    '[class*="tile" i]','[class*="card" i]','[class*="game" i]'
+  ].join(',');
+  let lobbyCardCount = 0;
+  try {
+    const seenCards = new Set();
+    for (const el of deepQueryAll(document, lobbyTileSelector)) {
+      if (!visibleStyle(el)) continue;
+      const txt = norm(readableText(el));
+      const hasId = !!(el.getAttribute('data-gameid') || el.getAttribute('data-game-id') || el.getAttribute('data-table-id') || el.getAttribute('data-tableid'));
+      if (!hasId && !/(ROULETTE|RULET)/.test(txt)) continue;
+      if (/BLACKJACK|BACCARAT|POKER|HISTORY|SON\s*500|LAST\s*500|OTOMAT|AUTOMATIC/.test(txt)) continue;
+      const key = (txt.slice(0,80) + '|' + (el.getAttribute('data-gameid') || el.getAttribute('data-table-id') || '')).slice(0,140);
+      if (seenCards.has(key)) continue;
+      seenCards.add(key);
+      lobbyCardCount += 1;
+    }
+  } catch (_) {}
+  const bodyT = norm(readableText(document.body || document.documentElement));
+  const titleT = norm(document.title || '');
+  const hasInGameLobbyButton = all.some(el => {
+    try {
+      if (!visibleStyle(el)) return false;
+      const r = el.getBoundingClientRect();
+      const t = norm([readableText(el), el.getAttribute && el.getAttribute('aria-label'), el.getAttribute && el.getAttribute('title')].join(' '));
+      return /\b(LOBI|LOBBY)\b/.test(t) && r.top <= innerHeight * 0.24 && r.left >= innerWidth * 0.50;
+    } catch (_) { return false; }
+  });
+  const activeGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|BAKIYE|BALANCE|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|KAZANCI|WINNINGS|JEU\s*0|VOISINS|ORPHELINS|TIERS/.test(bodyT);
+  const earlyLobbyLike = !autoFound && !tab && !hasInGameLobbyButton && (
+    lobbyCardCount >= 3 ||
+    /\/lobby/i.test(location.pathname || '') ||
+    (/\bRULET\b|\bROULETTE\b/.test(bodyT) && /STANDART|TURKCE|TÜRKÇE|HIZLI|PRIVE|PRIVÉ|VERSIYON/.test(bodyT) && lobbyCardCount >= 1)
+  );
+
   // V2.9.32: the user's screen shows SON 500 as a visible grid on the
   // lower-right game panel. Some builds keep the label outside the number
   // block, inside shadow DOM, or inside a same-origin iframe. Build dense
   // numeric clusters by layout and pick the largest non-betting cluster.
-  if (!roots.length) {
+  if (!roots.length && !earlyLobbyLike) {
     const records=[];
     for (const el of deepQueryAll(document, '*')) {
       if (!visibleStyle(el)) continue;
+      if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
       const n = numericValue(el);
       if (n === null || n < 0 || n > 36) continue;
       let childNumeric=false;
@@ -7277,46 +7565,10 @@ HISTORY500_SCAN = r"""
 
   roots.sort((a,b) => (b.score || b.count) - (a.score || a.count) || b.count - a.count || a.depth - b.depth);
   const best = roots[0] || null;
-
-  // If the collector has already returned to Pragmatic Roulette lobby, there
-  // will be multiple roulette table cards and no Automatic Play/SON500 panel.
-  // Report this so Python can clear a stale wait and immediately click next.
-  const lobbyTileSelector = [
-    '[data-gameid]','[data-game-id]','[data-table-id]','[data-tableid]',
-    '[data-testid="wow-tile"]','[data-testid*="tile" i]',
-    '[data-testid*="game" i]','[data-testid*="table" i]',
-    '[class*="tile" i]','[class*="card" i]','[class*="game" i]'
-  ].join(',');
-  let lobbyCardCount = 0;
-  try {
-    const seenCards = new Set();
-    for (const el of deepQueryAll(document, lobbyTileSelector)) {
-      if (!visibleStyle(el)) continue;
-      const txt = norm(readableText(el));
-      const hasId = !!(el.getAttribute('data-gameid') || el.getAttribute('data-game-id') || el.getAttribute('data-table-id') || el.getAttribute('data-tableid'));
-      if (!hasId && !/(ROULETTE|RULET)/.test(txt)) continue;
-      if (/BLACKJACK|BACCARAT|POKER|HISTORY|SON\s*500|LAST\s*500|OTOMAT|AUTOMATIC/.test(txt)) continue;
-      const key = (txt.slice(0,80) + '|' + (el.getAttribute('data-gameid') || el.getAttribute('data-table-id') || '')).slice(0,140);
-      if (seenCards.has(key)) continue;
-      seenCards.add(key);
-      lobbyCardCount += 1;
-    }
-  } catch (_) {}
-  const bodyT = norm(readableText(document.body || document.documentElement));
-  const titleT = norm(document.title || '');
-  const lobbyLike = !autoFound && !best && (
+  const lobbyLike = earlyLobbyLike || (!autoFound && !best && (
     lobbyCardCount >= 3 ||
     (/\bRULET\b|\bROULETTE\b/.test(bodyT) && /STANDART|TURKCE|TÜRKÇE|HIZLI|PRIVE|PRIVÉ|VERSIYON/.test(bodyT) && lobbyCardCount >= 1)
-  );
-  const hasInGameLobbyButton = all.some(el => {
-    try {
-      if (!visibleStyle(el)) return false;
-      const r = el.getBoundingClientRect();
-      const t = norm([readableText(el), el.getAttribute && el.getAttribute('aria-label'), el.getAttribute && el.getAttribute('title')].join(' '));
-      return /\b(LOBI|LOBBY)\b/.test(t) && r.top <= innerHeight * 0.24 && r.left >= innerWidth * 0.50;
-    } catch (_) { return false; }
-  });
-  const activeGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|BAKIYE|BALANCE|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|KAZANCI|WINNINGS|JEU\s*0|VOISINS|ORPHELINS|TIERS/.test(bodyT);
+  ));
   const hasHotColdPanel = /SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD/.test(bodyT);
   const blockedTable = /POWER\s*UP\s*(RULET|ROULETTE|ROULET)?|POWERUP\s*(RULET|ROULETTE|ROULET)?/.test(titleT + ' ' + bodyT);
   const hotColdOnly = hasInGameLobbyButton && activeGameUi && hasHotColdPanel && !tab;
@@ -8778,7 +9030,7 @@ class ChromeBridge(threading.Thread):
             )
         return ok
 
-    def _chrome_dga_runtime_contexts(self, limit=10):
+    def _chrome_dga_runtime_contexts(self, limit=3):
         """Return several Chrome execution contexts to try for DGA WebSocket.
 
         V2.9.25 used one context; on the user's machine polling returned 0/0
@@ -8815,9 +9067,7 @@ class ChromeBridge(threading.Thread):
                 base += 120
             if "live-casino" in url or "livecasino" in url:
                 base += 60
-            # Try the session default context too; for top pages this is often
-            # where WebSocket is allowed and where window state survives.
-            candidates.append((base + 10, sid, None))
+            has_default_ctx = False
             for ctx in (self.execution_contexts.get(sid) or {}).values():
                 cid = ctx.get("id")
                 if cid is None:
@@ -8828,6 +9078,7 @@ class ChromeBridge(threading.Thread):
                 score = base
                 if bool(aux.get("isDefault", False)):
                     score += 60
+                    has_default_ctx = True
                 if "games." in origin or "pragmatic" in origin:
                     score += 500
                 if origin.startswith(("http://", "https://")):
@@ -8835,6 +9086,8 @@ class ChromeBridge(threading.Thread):
                 if "isolated" in name:
                     score -= 80
                 candidates.append((score, sid, int(cid)))
+            if not has_default_ctx:
+                candidates.append((base + 10, sid, None))
         candidates.sort(key=lambda row: -row[0])
         out = []
         seen = set()
@@ -8844,7 +9097,7 @@ class ChromeBridge(threading.Thread):
                 continue
             seen.add(key)
             out.append({"session": sid, "context_id": cid})
-            if len(out) >= max(1, int(limit or 10)):
+            if len(out) >= max(1, int(limit or 3)):
                 break
         return out
 
@@ -8858,7 +9111,7 @@ class ChromeBridge(threading.Thread):
             with self.state.lock:
                 self.state.table_scan_status = "CHROME DGA: kayıtlı masa bankası yok"
             return False
-        contexts = self._chrome_dga_runtime_contexts(limit=10)
+        contexts = self._chrome_dga_runtime_contexts(limit=3)
         if not contexts:
             with self.state.lock:
                 self.state.table_scan_status = (
@@ -9148,6 +9401,23 @@ class ChromeBridge(threading.Thread):
         raw = str(payload_text or "")
         if not raw:
             return False
+        if direction == "sent":
+            if self.dga_casino_id and self.dga_currency:
+                return False
+            if "casinoid" not in raw.lower():
+                return False
+        else:
+            seen_dga = getattr(self, "_recent_dga_payloads", None)
+            if not isinstance(seen_dga, dict):
+                seen_dga = {}
+                self._recent_dga_payloads = seen_dga
+            now_dga = time.time()
+            raw_sig = (len(raw), hash(raw))
+            if now_dga - float(seen_dga.get(raw_sig, 0.0) or 0.0) < 2.5:
+                return False
+            if len(seen_dga) > 600:
+                seen_dga.clear()
+            seen_dga[raw_sig] = now_dga
         try:
             payload = json.loads(raw)
         except Exception:
@@ -9170,7 +9440,7 @@ class ChromeBridge(threading.Thread):
                 discovered = []
                 for key in keys if isinstance(keys, list) else []:
                     tid = str(key or "").strip()
-                    if tid:
+                    if tid and tid not in self.collector_seen:
                         discovered.append({"table_id": tid, "display_name": tid})
                 if discovered and not self.manual_api_teach:
                     self._register_discovered_tables(discovered, source="DGA websocket subscribe")
@@ -9195,12 +9465,11 @@ class ChromeBridge(threading.Thread):
                         display_name=name,
                         source_label=source_label,
                     )
-                    self.state.mark_table_attempt(tid, ok=True)
                     with self.state.lock:
                         self.state.table_scan_status = (
                             f"DGA CANLI: Chrome feed veri aldı • {name[:48]}"
                         )
-                else:
+                elif tid not in self.collector_seen:
                     self._register_discovered_tables(
                         [{"table_id": tid, "display_name": name}],
                         source="Chrome DGA WebSocket",
@@ -9750,8 +10019,9 @@ class ChromeBridge(threading.Thread):
     def save_roulette_url(self, ti):
         try:
             url = self._safe_return_url(ti)
-            if not url:
+            if not url or url == getattr(self, "_last_saved_roulette_url", ""):
                 return
+            self._last_saved_roulette_url = url
             for path in (self.last_url_path, self.persistent_url_path):
                 try:
                     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -11859,9 +12129,11 @@ class ChromeBridge(threading.Thread):
         try:
             result = obj.get("result",{})
             body = result.get("body","")
+            if not body or len(body) > 1_500_000:
+                return
             if result.get("base64Encoded"):
                 body = base64.b64decode(body).decode("utf-8",errors="ignore")
-            if not body:
+            if not body or len(body) > 1_200_000:
                 return
 
             meta = context if isinstance(context, dict) else {}
@@ -12175,6 +12447,11 @@ class ChromeBridge(threading.Thread):
 
                     value = obj.get("result",{}).get("result",{}).get("value")
                     if isinstance(value,dict):
+                        if value.get("lobbyLike"):
+                            with self.state.lock:
+                                if self.state.history:
+                                    self.state.status = "LOBİ AÇIK • masa seçilmesi bekleniyor"
+                            return
                         title = value.get("title","")
 
                         with self.state.lock:
@@ -12394,6 +12671,8 @@ class ChromeBridge(threading.Thread):
                         return
                     value = obj.get("result",{}).get("result",{}).get("value")
                     if isinstance(value,dict):
+                        if value.get("lobbyLike"):
+                            return
                         nums = value.get("nums",[])
                         title = value.get("title","")
                         if len(nums) >= 20:
@@ -12670,7 +12949,13 @@ class ChromeBridge(threading.Thread):
                     return
 
                 # Pragmatic/table metadata responses are small JSON/text requests.
-                if (
+                low_path = low.split("?", 1)[0]
+                is_static_asset = low_path.endswith((
+                    ".js", ".mjs", ".css", ".html", ".htm", ".png", ".jpg", ".jpeg",
+                    ".gif", ".webp", ".svg", ".woff", ".woff2", ".ttf", ".otf",
+                    ".mp3", ".mp4", ".ogg", ".wav", ".webm", ".wasm", ".ico", ".map",
+                ))
+                if not is_static_asset and (
                     "pragmatic" in low
                     or "roulette" in low
                     or "table" in low
@@ -14175,16 +14460,22 @@ class App:
             pass
 
     def start_table_scan_ui(self):
-        self.bridge.start_table_scan()
+        threading.Thread(target=self.bridge.start_table_scan, daemon=True).start()
 
     def start_tab_walk_scan_ui(self):
-        self.bridge.start_tab_walk_scan(auto_cycle=True)
+        threading.Thread(
+            target=lambda: self.bridge.start_tab_walk_scan(auto_cycle=True),
+            daemon=True,
+        ).start()
 
     def stop_table_scan_ui(self):
-        self.bridge.stop_table_scan("kullanıcı durdurdu")
+        threading.Thread(
+            target=lambda: self.bridge.stop_table_scan("kullanıcı durdurdu"),
+            daemon=True,
+        ).start()
 
     def start_api_refresh_ui(self):
-        self.bridge.start_api_refresh_all()
+        threading.Thread(target=self.bridge.start_api_refresh_all, daemon=True).start()
 
     def start_api_teach_ui(self):
         self.bridge.start_manual_api_teach()
@@ -14235,7 +14526,22 @@ class App:
                 self.root.quit()
             return
 
-        render_sig = (
+        status_sig = (
+            int(s.get("collector_refreshed", 0) or 0),
+            str(s.get("status") or ""),
+            str(s.get("source") or ""),
+            str(s.get("table") or ""),
+            str(s.get("direct_history_status") or ""),
+            str(s.get("background_status") or ""),
+            str(s.get("table_scan_status") or ""),
+            str(s.get("autolobby_status") or ""),
+            str(s.get("table500_source") or ""),
+            str(s.get("table_long_source") or ""),
+            str(s.get("archive_source") or ""),
+            bool(s.get("chrome")),
+            bool(s.get("seen")),
+        )
+        core_render_sig = (
             tuple(s.get("history") or ()),
             s.get("predicted"),
             int((s.get("validation") or {}).get("trials", 0) or 0),
@@ -14244,63 +14550,82 @@ class App:
             int(s.get("table500_count", 0) or 0),
             int(s.get("table_long_count", 0) or 0),
             int(s.get("live_memory_count", 0) or 0),
-            int(s.get("collector_refreshed", 0) or 0),
             str(s.get("pragmatic_table_id") or ""),
-            str(s.get("status") or ""),
-            str(s.get("source") or ""),
-            str(s.get("direct_history_status") or ""),
-            str(s.get("background_status") or ""),
-            str(s.get("table_scan_status") or ""),
-            str(s.get("autolobby_status") or ""),
-            bool(s.get("chrome")),
             bool(s.get("seen")),
         )
-        if render_sig == getattr(self, "_last_render_sig", None):
+
+        if status_sig != getattr(self, "_last_status_sig", None):
+            self._last_status_sig = status_sig
+            try:
+                self.collector_line.config(
+                    text=(
+                        str(s.get("background_status") or "ÇOKLU TOPLAYICI: keşif bekleniyor")
+                        + "\n"
+                        + str(s.get("table_scan_status") or "MASA TARAMA: hazır")
+                    ),
+                    fg=self.GREEN if int(s.get("collector_refreshed", 0) or 0) else self.YELLOW,
+                )
+            except Exception:
+                pass
+            try:
+                connected=bool(s.get("chrome"))
+                self.chrome_link_line.config(
+                    text=(
+                        "CHROME: BAĞLI ✓ • öğrenilen yol çalışabilir"
+                        if connected
+                        else "CHROME: BEKLİYOR • program otomatik bağlanmayı deniyor"
+                    ),
+                    fg=self.GREEN if connected else self.YELLOW,
+                )
+            except Exception:
+                pass
+            try:
+                self.lobby_teach_line.config(
+                    text=str(s.get("autolobby_status") or "ÖĞREN: --"),
+                    fg=(
+                        self.GREEN
+                        if "TAMAM" in str(s.get("autolobby_status","")) or "MASA AÇIK" in str(s.get("autolobby_status",""))
+                        else self.YELLOW
+                        if "BEKLİYOR" in str(s.get("autolobby_status","")) or "GEREKLİ" in str(s.get("autolobby_status",""))
+                        else self.BLUE
+                    ),
+                )
+            except Exception:
+                pass
+            self.status.config(text=s["status"])
+            self.status.config(
+                fg=self.GREEN if s["seen"]
+                else self.BLUE if s["chrome"]
+                else self.YELLOW
+            )
+            tid=s.get("pragmatic_table_id") or "-"
+            theme=s.get("theme_code") or "-"
+            game_id=s.get("operator_game_id") or "-"
+            self.archive_line.config(text=(
+                f"{s.get('direct_history_status','PRAGMATIC DIRECT: bekleniyor')}\n"
+                f"MASA KİMLİĞİ: {tid}\n"
+                f"OPERATOR GAME: {game_id} • TEMA: {theme}\n"
+                f"{s.get('table500_source','SON500: bekleniyor')}\n"
+                f"{s.get('table_long_source','UZUN MASA ARŞİVİ: bekleniyor')}\n"
+                f"{s.get('archive_source','ORTAK HAVUZ: bekleniyor')}\n"
+                f"{s.get('background_status','MASA BANKALARI: bekleniyor')}\n"
+                f"CANLI HAFIZA: {s.get('live_memory_count',0)} spin\n"
+                f"CANLI SYNC: {s.get('source','-')}\n"
+                f"SON500 LIVE: SADECE DOĞRULANMIŞ +YENİ\n"
+                f"PUANLAMA: {s.get('score_error_status','OK')}\n"
+                f"{s.get('autorecover_status','AUTO KURTARMA: HAZIR')}"
+            ))
+            table = f" • {s['table']}" if s["table"] else ""
+            self.source.config(text=f"Kaynak: {s['source']}{table}")
+
+        if core_render_sig == getattr(self, "_last_render_sig", None):
             try:
                 self._refresh_game_flash(force=False)
             except Exception:
                 pass
             self.root.after(250, self.refresh)
             return
-        self._last_render_sig = render_sig
-
-        try:
-            self.collector_line.config(
-                text=(
-                    str(s.get("background_status") or "ÇOKLU TOPLAYICI: keşif bekleniyor")
-                    + "\n"
-                    + str(s.get("table_scan_status") or "MASA TARAMA: hazır")
-                ),
-                fg=self.GREEN if int(s.get("collector_refreshed", 0) or 0) else self.YELLOW,
-            )
-        except Exception:
-            pass
-        try:
-            connected=bool(s.get("chrome"))
-            self.chrome_link_line.config(
-                text=(
-                    "CHROME: BAĞLI ✓ • öğrenilen yol çalışabilir"
-                    if connected
-                    else "CHROME: BEKLİYOR • program otomatik bağlanmayı deniyor"
-                ),
-                fg=self.GREEN if connected else self.YELLOW,
-            )
-        except Exception:
-            pass
-
-        try:
-            self.lobby_teach_line.config(
-                text=str(s.get("autolobby_status") or "ÖĞREN: --"),
-                fg=(
-                    self.GREEN
-                    if "TAMAM" in str(s.get("autolobby_status","")) or "MASA AÇIK" in str(s.get("autolobby_status",""))
-                    else self.YELLOW
-                    if "BEKLİYOR" in str(s.get("autolobby_status","")) or "GEREKLİ" in str(s.get("autolobby_status",""))
-                    else self.BLUE
-                ),
-            )
-        except Exception:
-            pass
+        self._last_render_sig = core_render_sig
 
         # V2.8.12: if K1/K2 flash is armed, keep it synced to the
         # CURRENT prediction. Signature check prevents needless reinjection.
@@ -14308,14 +14633,6 @@ class App:
             self._refresh_game_flash(force=False)
         except Exception:
             pass
-
-
-        self.status.config(text=s["status"])
-        self.status.config(
-            fg=self.GREEN if s["seen"]
-            else self.BLUE if s["chrome"]
-            else self.YELLOW
-        )
 
         h = s["history"]
         watch = s["watch"]
@@ -15396,6 +15713,10 @@ def self_test():
     sc_mt = source_consensus([1, 7, 22], [22, 7, 1], pool_20_tables[:500], pool_20_tables[:500], pool_20_tables, [])
     assert "ARCHIVE" in sc_mt["sources"]
     assert sc_mt["sources"]["ARCHIVE"]["top1"] == 14
+
+    # Lobby exit guard assertions:
+    assert "lobbyLike: true" in DOM_SCAN
+    assert "earlyLobbyLike" in HISTORY500_SCAN
 
     return True
 
