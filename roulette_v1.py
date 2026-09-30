@@ -173,12 +173,18 @@ def recency_expert(history):
     """
     hist = [int(x) for x in history if isinstance(x, int) and 0 <= x <= 36][:40]
     scores = {n: 0.18 for n in range(37)}
+    freq = Counter(hist)
     for idx, n in enumerate(hist):
         w = 1.0 / (1.0 + idx * 0.24)
-        scores[n] += 2.3 * w
-    freq = Counter(hist)
+        # Do not parrot the last 3 spins (idx 0..2) if they only appeared once in the window.
+        if idx <= 2 and freq.get(n, 0) <= 1:
+            w *= 0.32
+        scores[n] += 2.1 * w
     for n, c in freq.items():
-        scores[n] += 0.65 * c
+        if c >= 2:
+            scores[n] += 0.85 * c
+        else:
+            scores[n] += 0.30 * c
     return normalize_probs(scores)
 
 
@@ -189,12 +195,17 @@ def wheel_expert(history):
     """
     hist = [int(x) for x in history if isinstance(x, int) and 0 <= x <= 36][:30]
     scores = {n: 0.20 for n in range(37)}
+    freq18 = Counter(hist[:18])
 
     for idx, n in enumerate(hist):
         w = 1.0 / (1.0 + idx * 0.20)
         i = EU_WHEEL.index(n)
-        for d, mult in ((0, 1.00), (1, 0.88), (-1, 0.88),
-                        (2, 0.58), (-2, 0.58), (3, 0.28), (-3, 0.28)):
+        if idx <= 2 and freq18.get(n, 0) <= 1:
+            center_mult = 0.45
+        else:
+            center_mult = 0.96
+        for d, mult in ((0, center_mult), (1, 0.92), (-1, 0.92),
+                        (2, 0.62), (-2, 0.62), (3, 0.30), (-3, 0.30)):
             m = EU_WHEEL[(i+d) % 37]
             scores[m] += mult * w
 
@@ -3048,15 +3059,34 @@ def choose_net_number(
     mt_tables = int(mt_snap.get("tables", 0) or 0)
     mt_exact_obs = int(mt_snap.get("exact_obs", 0) or 0)
     mt_exact_probs = mt_snap.get("exact_probs") or {}
+    table_long_count = int(pred.get("table_long_count", 0) or 0)
 
-    # Modest exact-skill adaptation, plus balanced multi-table pool maturity.
+    # Modest exact-skill adaptation, plus balanced multi-table & table-archive maturity.
     raw_fw = {
         fam:min(1.30, max(0.75, family_strength[fam]))
         for fam in family_dists
     }
+    live_n100 = max(
+        (int(pr.get("n100", 0) or 0) for pr in profiles.values()),
+        default=0,
+    )
+    maturity_gap = max(0.0, (35.0 - min(35.0, float(live_n100))) / 35.0)
+    if "TABLO" in raw_fw and table_long_count >= 100:
+        tablo_boost = 1.0 + 0.08 * min(1.0, table_long_count / 500.0) + 0.10 * maturity_gap
+        raw_fw["TABLO"] = min(1.38, raw_fw["TABLO"] * tablo_boost)
     if "ORTAK" in raw_fw and mt_exact_obs >= 5:
-        pool_boost = 1.0 + 0.06 * min(1.0, mt_spins / 5000.0) + 0.04 * min(1.0, max(0, mt_tables - 1) / 10.0)
-        raw_fw["ORTAK"] = min(1.35, raw_fw["ORTAK"] * pool_boost)
+        pool_boost = (
+            1.0
+            + 0.07 * min(1.0, mt_spins / 5000.0)
+            + 0.05 * min(1.0, max(0, mt_tables - 1) / 10.0)
+            + 0.08 * maturity_gap
+        )
+        raw_fw["ORTAK"] = min(1.38, raw_fw["ORTAK"] * pool_boost)
+    if maturity_gap > 0.0:
+        if "AKIŞ" in raw_fw:
+            raw_fw["AKIŞ"] = max(0.70, raw_fw["AKIŞ"] * (1.0 - 0.10 * maturity_gap))
+        if "ÇARK" in raw_fw:
+            raw_fw["ÇARK"] = max(0.68, raw_fw["ÇARK"] * (1.0 - 0.12 * maturity_gap))
 
     s = sum(raw_fw.values()) or 1.0
     fw = {fam:w/s for fam,w in raw_fw.items()}
@@ -3078,6 +3108,8 @@ def choose_net_number(
     combined = pred.get("combined") or {}
     max_comb = max((float(v or 0.0) for v in combined.values()), default=0.0)
     max_mt_prob = max((float(v or 0.0) for v in mt_exact_probs.values()), default=0.0)
+    ortak_dist = family_dists.get("ORTAK") or {}
+    tablo_dist = family_dists.get("TABLO") or {}
 
     for n in range(37):
         if max_comb > 1e-9:
@@ -3086,6 +3118,34 @@ def choose_net_number(
             total[n] += 0.10 * (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob)
         if fam_presence[n] >= 2:
             total[n] += 0.07 * (fam_presence[n] - 1)
+        # Cross-family wheel-neighbor synergy (K1/K2 pocket alignment between ORTAK and TABLO)
+        ln, rn = _WHEEL_LR[n]
+        nb_support = (
+            float(ortak_dist.get(ln, 0.0)) + float(ortak_dist.get(rn, 0.0))
+            + float(tablo_dist.get(ln, 0.0)) + float(tablo_dist.get(rn, 0.0))
+        )
+        if nb_support > 0.0:
+            total[n] += 0.045 * min(1.8, nb_support)
+
+    # Anti-echo guard: prevent the model from blindly repeating the just-landed
+    # spin (hist[0]) or previous spin (hist[1]) unless ORTAK or TABLO explicitly
+    # ranks that exact repeat in its Top 2 transitions.
+    recent_hist = [
+        int(x) for x in (pred.get("recent_history") or [])
+        if isinstance(x, int) and 0 <= x <= 36
+    ]
+    deep_top2 = set()
+    for deep_key in ("ARCHIVE", "TABLE500", "TABLE_LONG"):
+        sd_deep = raw_sources.get(deep_key) or {}
+        for x in (sd_deep.get("top5") or [])[:2]:
+            if isinstance(x, int) and 0 <= x <= 36:
+                deep_top2.add(int(x))
+    if recent_hist:
+        for idx_r, damper in ((0, 0.55), (1, 0.68), (2, 0.78)):
+            if idx_r < len(recent_hist):
+                r_spin = recent_hist[idx_r]
+                if r_spin not in deep_top2:
+                    total[r_spin] *= damper
 
     # Anti-stickiness: if a number was picked as NET 2+ times in the last 6
     # live rounds without an exact hit, dampen it so NET does not lock on a
@@ -5631,8 +5691,19 @@ class RouletteState:
 
             # If normal live-history DOM is still empty, bootstrap current view.
             if not self.history and clean:
-                if table_name:
-                    self.table_name = str(table_name)
+                raw_t500 = str(table_name or "").strip()
+                norm_t500 = raw_t500.lower()
+                is_gen_t500 = (
+                    not norm_t500
+                    or norm_t500 in ("roulette", "rulet", "pragmatic play", "lobby", "lobi")
+                    or norm_t500.startswith(("http://", "https://"))
+                    or "/desktop/" in norm_t500
+                    or "client." in norm_t500
+                )
+                if raw_t500 and (not self.table_name or not is_gen_t500):
+                    self.table_name = raw_t500
+                elif not self.table_name and self.pragmatic_table_id:
+                    self.table_name = str(self.pragmatic_table_id)
                 self.source = source_label
                 self.roulette_seen = True
                 self.last_update = time.time()
@@ -6095,9 +6166,23 @@ class RouletteState:
             list(self.table_history_500[:500]) + list(self.table_long_history)
         )
 
+        # Enrich local chronological history during early rounds on a table
+        # so LOCAL and MODEL_TRANSITION have 200+ real same-table spins immediately.
+        if len(self.session_results) < 220 and len(self.table_history_500) >= 40:
+            recent_nf = list(reversed(self.session_results[-60:])) if self.session_results else list(hist[:20])
+            new_front_local = detect_new_front_large(
+                self.table_history_500[:120],
+                recent_nf,
+                max_new=60,
+            )
+            merged_local_nf = (list(new_front_local) + list(self.table_history_500[:260]))[:260]
+            local_seq = list(reversed(merged_local_nf))
+        else:
+            local_seq = self.session_results
+
         pred = combined_prediction(
             hist,
-            self.session_results,
+            local_seq,
             self.expert_loss,
             self.expert_trials,
             self.expert_hits,
@@ -6106,7 +6191,7 @@ class RouletteState:
 
         consensus = source_consensus(
             hist,
-            self.session_results,
+            local_seq,
             self.table_history_500,
             self.table_long_history,
             pool_seq,
@@ -6119,7 +6204,7 @@ class RouletteState:
         pred = apply_walk_forward_model(
             pred,
             hist,
-            self.session_results,
+            local_seq,
             self.table_long_history,
             wf_profile,
         )
@@ -6148,6 +6233,11 @@ class RouletteState:
             pred["model_share"] = ordered_comb[0][1] * 100.0
 
         pred["multi_table_transition"] = pool_snap
+        pred["recent_history"] = list(hist[:6]) if hist else []
+        pred["table_long_count"] = max(
+            len(self.table_long_history or []),
+            len(self.table_history_500 or []),
+        )
 
         region_name, region_conf, region_scores, region_features = region_prediction(hist)
         pred["region_name"] = region_name
@@ -6591,6 +6681,62 @@ class RouletteState:
         with self.lock:
             self.neighbor1_display_batch = []
 
+    def reset_performance_stats(self):
+        """
+        Reset all live performance/validation counters (PERFORMANS, RİSK/EV,
+        LOCKED LIVE, K1/K2 totals, 12-round lists, and R100/R300/ALL source counters)
+        WITHOUT touching any collected spin history (SON20, SON500, UZUN ARŞİV, ORTAK HAVUZ).
+        """
+        with self.lock:
+            self.expert_loss = {name: 0.0 for name in EXPERT_NAMES}
+            self.expert_trials = 0
+            self.expert_hits = {
+                name: {"trials": 0, "exact": 0, "top5": 0, "neighbor5": 0}
+                for name in EXPERT_NAMES
+            }
+            self.validation = {
+                "trials": 0,
+                "exact": 0,
+                "side4": 0,
+                "top5": 0,
+                "neighbor5": 0,
+                "region": 0,
+            }
+            self.validation_history = []
+            self.display_compare_batch = []
+            self.neighbor_display_batch = []
+            self.neighbor_stats_total = {
+                "trials": 0,
+                "net_hits": 0,
+                "backup_hits": 0,
+                "any_hits": 0,
+                "multi_hits": 0,
+                "coverage_sum": 0,
+            }
+            self.neighbor1_display_batch = []
+            self.neighbor1_stats_total = {
+                "trials": 0,
+                "net_hits": 0,
+                "backup_hits": 0,
+                "any_hits": 0,
+                "multi_hits": 0,
+                "coverage_sum": 0,
+            }
+            self.last_neighbor1_package = None
+            self.last_neighbor2_package = None
+            self.locked_live = {
+                "version": "V2.9 FINAL CORE",
+                "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "rows": [],
+                "frozen": False,
+            }
+            self.source_hits = {
+                name: {"trials": 0, "exact": 0, "top5": 0}
+                for name in SOURCE_NAMES
+            }
+            if self.history:
+                self.pending_prediction = self._make_prediction(self.history)
+            self._save_learning()
 
     def update_results(self, results, hot=None, cold=None, table_name="", source="API"):
         clean = []
@@ -6625,11 +6771,16 @@ class RouletteState:
                 )
                 or "lobby" in norm_raw
                 or "lobi" in norm_raw
+                or norm_raw.startswith(("http://", "https://"))
+                or "/desktop/" in norm_raw
+                or "client." in norm_raw
             )
             if self.table_name and is_generic_title:
                 incoming_table = str(self.table_name)
+            elif is_generic_title and self.pragmatic_table_id:
+                incoming_table = str(self.pragmatic_table_id)
             else:
-                incoming_table = str(raw_table or self.table_name or "")
+                incoming_table = str(raw_table or self.table_name or self.pragmatic_table_id or "")
 
             # First usable data.
             if not self.history:
@@ -13595,7 +13746,20 @@ class App:
         self.weight_line.pack(fill="x",padx=8,pady=(0,6))
 
         perf_shell,perf=self._detail_frame(); self.detail_frames["perf"]=perf_shell
-        tk.Label(perf,text="GERÇEK PERFORMANS",font=("Segoe UI",8,"bold"),fg=self.MUTED,bg=self.PANEL).pack(anchor="w",padx=8,pady=(6,1))
+        perf_head=tk.Frame(perf,bg=self.PANEL)
+        perf_head.pack(fill="x",padx=8,pady=(6,1))
+        tk.Label(
+            perf_head,text="GERÇEK PERFORMANS",
+            font=("Segoe UI",8,"bold"),fg=self.MUTED,bg=self.PANEL
+        ).pack(side="left")
+        tk.Button(
+            perf_head,text="PERFORMANSI SIFIRLA",
+            command=self.clear_performance_view,
+            font=("Segoe UI",7,"bold"),
+            bg=self.PANEL2,fg=self.YELLOW,
+            activebackground=self.PANEL2,activeforeground=self.GREEN,
+            relief="flat",bd=0,padx=7,pady=2,cursor="hand2"
+        ).pack(side="right")
         self.validation_line=tk.Label(perf,text="Henüz doğrulama yok.",font=("Consolas",8,"bold"),justify="left",anchor="w",fg=self.TEXT,bg=self.PANEL)
         self.validation_line.pack(fill="x",padx=8,pady=(1,1))
         self.recent20_line=tk.Label(perf,text="",font=("Consolas",8,"bold"),justify="left",anchor="w",fg=self.GREEN,bg=self.PANEL)
@@ -13810,21 +13974,33 @@ class App:
 
     def clear_compare_view(self):
         self.state.clear_display_comparisons()
+        self._last_render_sig = None
         self.compare_history_line.config(
             text="Liste temizlendi • yeni gerçek sonuç 01 olarak başlayacak."
         )
 
     def clear_neighbor_view(self):
         self.state.clear_neighbor_comparisons()
+        self._last_render_sig = None
         self.neighbor_history.config(
             text="Liste temizlendi • yeni gerçek sonuç 01 olarak başlayacak."
         )
 
     def clear_neighbor1_view(self):
         self.state.clear_neighbor1_comparisons()
+        self._last_render_sig = None
         self.neighbor1_history.config(
             text="Liste temizlendi • yeni gerçek sonuç 01 olarak başlayacak."
         )
+
+    def clear_performance_view(self):
+        self.state.reset_performance_stats()
+        self._last_render_sig = None
+        self._last_status_sig = None
+        try:
+            self.refresh()
+        except Exception:
+            pass
 
 
     def _current_neighbor_helper_data(self, neighbor_count):
