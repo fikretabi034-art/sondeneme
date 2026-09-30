@@ -956,12 +956,36 @@ def combined_prediction(
 
 
 
+def is_betting_grid_artifact(nums):
+    """
+    Detect non-history DOM artifacts such as the 37-number betting table (0..36)
+    or the physical wheel/racetrack sequence (EU_WHEEL).
+    """
+    seq = [int(x) for x in (nums or []) if isinstance(x, int) and 0 <= int(x) <= 36]
+    if not seq:
+        return False
+    if 34 <= len(seq) <= 44 and len(set(seq[:37])) >= 34:
+        return True
+    for i in range(max(0, len(seq) - 5)):
+        w = seq[i:i + 6]
+        if w == [w[0] + k for k in range(6)] or w == [w[0] + 3 * k for k in range(6)]:
+            return True
+    if len(seq) >= 7:
+        wheel_pos = {n: idx for idx, n in enumerate(EU_WHEEL)}
+        for i in range(len(seq) - 6):
+            p0 = wheel_pos.get(seq[i], -99)
+            if all(wheel_pos.get(seq[i + k], -99) == (p0 + k) % 37 for k in range(1, 7)):
+                return True
+            if all(wheel_pos.get(seq[i + k], -99) == (p0 - k) % 37 for k in range(1, 7)):
+                return True
+    return False
+
+
 def choose_live_dom_candidate(candidates, current_history):
     """
-    Pick the freshest recent-results DOM block.
+    Choose the single DOM candidate that represents the actual live roulette
+    history bar, and determine how it aligns with current_history.
 
-    Pragmatic can leave more than one visible/stale history widget alive.
-    Prefer a block that proves new front results against current history.
     Never roll history backwards to an older/unrelated widget.
     """
     current = [
@@ -987,7 +1011,7 @@ def choose_live_dom_candidate(candidates, current_history):
             if 0 <= n <= 36:
                 nums.append(n)
 
-        if len(nums) >= 5:
+        if len(nums) >= 5 and not is_betting_grid_artifact(nums):
             prepared.append((nums[:30], meta))
 
     if not prepared:
@@ -1001,6 +1025,10 @@ def choose_live_dom_candidate(candidates, current_history):
                 + str(meta.get("cls", ""))
             ).lower()
             bonus = 0
+            if meta.get("son500Grid"):
+                bonus += 40
+            if meta.get("collapsedBar"):
+                bonus += 30
             if "history" in hint:
                 bonus += 20
             if "recent" in hint:
@@ -1020,12 +1048,13 @@ def choose_live_dom_candidate(candidates, current_history):
     best = None
 
     # Pass 1: strictly check forward (newest-first) orientation across all DOM candidates.
-    # Never allow a reversed candidate to compete against a valid forward match
-    # (prevents short palindromes like 11-36-11 from injecting reversed history).
+    # Never allow a reversed candidate to compete against a valid forward match,
+    # and never let a partial/shifted sub-match override an exact shift == 0 head match.
     for nums, meta in prepared:
         cand = nums
         min_tail = 3 if len(cand) <= 12 else 4
         max_shift = min(16, max(0, len(cand) - min_tail))
+        is_son500_grid = bool(meta.get("son500Grid"))
 
         for shift in range(max_shift + 1):
             max_cmp = min(len(current), len(cand) - shift, 20)
@@ -1045,15 +1074,21 @@ def choose_live_dom_candidate(candidates, current_history):
             if overlap < req_ov:
                 continue
 
-            relation = "ahead" if shift > 0 else "same"
-            priority = 2 if shift > 0 else 1
+            # For shift > 0, require the entire comparable tail of cand to match
+            # current[:max_cmp] (unless cand is >=20 and matched >=10 spins), so a
+            # wrapper that appends hot/cold/stat numbers after the 10-number bar is rejected.
+            if shift > 0 and overlap < max_cmp and overlap < 10:
+                continue
 
-            # Prefer smaller shift (-shift) for equal overlap so palindrome sub-matches
-            # never beat the true shortest new-spin shift.
+            full_tail = 1 if (overlap == max_cmp or (shift == 0 and is_son500_grid and overlap >= 8)) else 0
+            eff_overlap = max_cmp if (shift == 0 and is_son500_grid and overlap >= 8) else overlap
+            relation = "ahead" if shift > 0 else "same"
+
             score = (
-                priority,
-                overlap,
+                full_tail,
+                eff_overlap,
                 -shift,
+                1 if is_son500_grid else 0,
                 len(cand),
             )
 
@@ -1069,6 +1104,9 @@ def choose_live_dom_candidate(candidates, current_history):
 
             if best is None or row["_score"] > best["_score"]:
                 best = row
+
+            if shift == 0 and (full_tail == 1 or overlap >= min(8, len(cand), len(current))):
+                break
 
     # Pass 2: if no forward match exists, check if current[:10] was previously
     # corrupted by a reversed block (e.g. reversed(current[:10]) appears inside cand).
@@ -1108,12 +1146,6 @@ def align_reference_to_live(current_history, reference_history, max_new=25):
 
     Returns only when the reference PROVES continuity:
       reference = [new..., current_head...]
-
-    It checks both orientations, because Pragmatic skins can render history
-    newest->oldest or oldest->newest.
-
-    Nothing is returned for unrelated/stale lists, therefore the reference
-    can never replace live history wholesale.
     """
     current = [
         int(x) for x in (current_history or [])
@@ -1124,52 +1156,45 @@ def align_reference_to_live(current_history, reference_history, max_new=25):
         if isinstance(x, int) and 0 <= x <= 36
     ]
 
-    if len(current) < 4 or len(ref) < 5:
+    if len(current) < 4 or len(ref) < 20 or is_betting_grid_artifact(ref):
         return None
 
-    variants = [
-        ("forward", ref),
-        ("reverse", list(reversed(ref))),
-    ]
-
     best = None
+    cand = ref
+    limit = min(max_new, max(0, len(cand) - 4))
 
-    for orientation, cand in variants:
-        limit = min(max_new, max(0, len(cand) - 4))
+    for shift in range(0, limit + 1):
+        overlap = min(
+            len(current),
+            len(cand) - shift,
+            20,
+        )
 
-        for shift in range(0, limit + 1):
-            overlap = min(
-                len(current),
-                len(cand) - shift,
-                20,
-            )
+        if overlap < 5:
+            continue
 
-            if overlap < 4:
-                continue
+        # Require exact contiguous head continuity.
+        if cand[shift:shift + overlap] != current[:overlap]:
+            continue
 
-            # Require exact contiguous head continuity.
-            if cand[shift:shift + overlap] != current[:overlap]:
-                continue
+        score = (
+            overlap,
+            -shift,
+        )
 
-            # Longer exact overlap is overwhelmingly preferred.
-            # For equal overlap, prefer fewer missing new spins.
-            score = (
-                overlap,
-                -shift,
-                1 if orientation == "forward" else 0,
-            )
+        row = {
+            "orientation": "forward",
+            "reference": cand,
+            "new_count": shift,
+            "new_items": cand[:shift],
+            "overlap": overlap,
+            "_score": score,
+        }
 
-            row = {
-                "orientation": orientation,
-                "reference": cand,
-                "new_count": shift,
-                "new_items": cand[:shift],
-                "overlap": overlap,
-                "_score": score,
-            }
-
-            if best is None or row["_score"] > best["_score"]:
-                best = row
+        if best is None or row["_score"] > best["_score"]:
+            best = row
+        if shift == 0:
+            break
 
     if best is None:
         return None
@@ -5372,7 +5397,7 @@ class RouletteState:
         combined_existing_grams = set()
         for k in ordered_keys:
             seq = by_key[k]
-            if len(seq) < 20:
+            if len(seq) < 20 or is_betting_grid_artifact(seq[:50]):
                 continue
             probes = _probe_grams(seq, 12, 16)
             if any(p in combined_existing_grams for p in probes):
@@ -5476,6 +5501,61 @@ class RouletteState:
             self.collector_refreshed = 0
             self._save_table_registry()
             self.background_status = self._bank_status_text(reason or "banka sıfırlandı")
+
+    def clear_all_past_table_data(self, reason=""):
+        """
+        Completely delete all previously scanned table archives (MASA BANKASI,
+        ORTAK HAVUZ, SON500 and UZUN ARŞİV files on disk and in memory) so fresh
+        table scans start 100% clean.
+        """
+        folders = {self.data_dir, os.path.dirname(os.path.abspath(__file__))}
+        removed_files = 0
+        for folder in folders:
+            if not folder or not os.path.isdir(folder):
+                continue
+            try:
+                for fname in os.listdir(folder):
+                    if (
+                        fname.startswith("table_long_archive_")
+                        or fname.startswith("table_history500_")
+                        or fname.startswith("table_history_500_")
+                        or fname == "table_registry.json"
+                    ) and fname.endswith(".json"):
+                        try:
+                            os.remove(os.path.join(folder, fname))
+                            removed_files += 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        with self.lock:
+            self.table_registry = {}
+            self._cached_bank_rows = []
+            self._cached_bank_rows_ts = 0.0
+            self._memory_table500 = {}
+            self._pool_memory_tables = {}
+            self._pool_disk_cache = {}
+            self._cached_pool_seq = []
+            self._cached_pool_meta = {"tables": 0, "spins": 0, "dup_tables": 0}
+            self._pool_dirty = True
+            self._last_pool_disk_scan_ts = 0.0
+            self.table_history_500 = []
+            self.table_long_history = []
+            self.table_history_source = "MASA SON500: geçmiş veriler silindi"
+            self.table_long_source = "UZUN MASA ARŞİVİ: 0"
+            self.archive_source = "ORTAK HAVUZ: geçmiş masa verileri silindi • yeni tarama bekleniyor"
+            self.collector_discovered = 0
+            self.collector_refreshed = 0
+            self.walkforward_cache_key = None
+            self.walkforward_cache_value = {}
+            self._save_table_registry(force=True)
+            self.background_status = (
+                f"MASA BANKASI: geçmiş masa verileri silindi ({removed_files} dosya) • 0 spin"
+            )
+            if self.history:
+                self.pending_prediction = self._make_prediction(self.history)
+        return removed_files
 
     def mark_table_discovered(self, table_id, display_name="", source="LOBI"):
         tid = str(table_id or "").strip()
@@ -5629,7 +5709,9 @@ class RouletteState:
             if 0 <= n <= 36:
                 clean.append(n)
 
-        if len(clean) < 20:
+        if len(clean) < 20 or is_betting_grid_artifact(clean):
+            return 0
+        if "SON500" in str(source_label or "").upper() and len(clean) < 40:
             return 0
         clean = clean[:500]
 
@@ -5788,7 +5870,9 @@ class RouletteState:
             if 0 <= n <= 36:
                 clean.append(n)
 
-        if len(clean) < 20:
+        if len(clean) < 20 or is_betting_grid_artifact(clean):
+            return
+        if "SON500" in str(source_label or "").upper() and len(clean) < 40:
             return
 
         clean = clean[:500]
@@ -5944,52 +6028,45 @@ class RouletteState:
                 self._try_load_learning(self.table_name, self.history)
                 self._refresh_imported_history(force=True)
 
-            if self.history and verified_live_new:
-                # Safe catch-up:
-                # SON500 is NOT replacing history. It only proved that these
-                # exact new numbers were prepended to the current live head.
-                temp_hist = list(self.history)
-
-                for actual in reversed(verified_live_new):
-                    self._safe_score_pending(int(actual))
-                    self.session_results.append(int(actual))
-                    temp_hist = [int(actual)] + temp_hist[:19]
-                    self.pending_prediction = self._make_prediction(temp_hist)
-
-                self.history = (
-                    [int(x) for x in verified_live_new]
-                    + list(self.history)
-                )[:20]
-
-                self.source = (
-                    f"SON500 doğrulanmış yakalama +{len(verified_live_new)}"
-                )
-                self.roulette_seen = True
-                self.status = "CANLI • DOĞRULANMIŞ SON500 CATCH-UP"
-                self.last_update = time.time()
-
-                # Recalculate against the exact repaired SON20 and persist all
-                # newly scored comparison/source-performance records.
-                self.pending_prediction = self._make_prediction(self.history)
-                self._save_learning()
-
-            elif (
-                self.history
-                and same_table
-                and live_alignment is None
-                and len(clean) >= 50
-                and not detect_new_front(clean[:20], self.history[:20], max_new=6)
-            ):
-                # Self-heal if live history became desynced (e.g. from an older
-                # session or reversed DOM block) while authoritative SON500 is active.
-                self.history = list(clean[:20])
-                self.pending_prediction = self._make_prediction(self.history)
-                self._save_learning()
-
+            # SON500 is archive/model data; never score fake live rounds from SON500.
+            # However, when the user expands the SON500 drawer on the same table (or
+            # when SON20 only had 10 numbers from the collapsed bar), silently sync
+            # SON20 to the authoritative SON500 top 20 without scoring fake rounds.
+            if self.history and same_table and len(clean) >= 40:
+                head_cmp = min(8, len(self.history))
+                if (
+                    len(self.history) < 20
+                    and clean[:len(self.history)] == self.history
+                ) or (
+                    head_cmp >= 5
+                    and clean[:head_cmp] == self.history[:head_cmp]
+                    and self.history[:20] != clean[:20]
+                ):
+                    self.history = list(clean[:20])
+                    self.pending_prediction = self._make_prediction(self.history)
+                    self._save_learning()
+                elif (
+                    live_alignment is None
+                    and len(clean) >= 50
+                    and not detect_new_front(clean[:20], self.history[:20], max_new=6)
+                ):
+                    # Self-heal only if current[:10] contains a reversed 5-gram
+                    rev_cur = list(reversed(self.history[:10]))
+                    rev_grams = {
+                        tuple(rev_cur[i:i + 5])
+                        for i in range(max(0, len(rev_cur) - 4))
+                    }
+                    clean_grams = {
+                        tuple(clean[i:i + 5])
+                        for i in range(max(0, min(30, len(clean)) - 4))
+                    }
+                    if rev_grams and (rev_grams & clean_grams):
+                        self.history = list(clean[:20])
+                        self.pending_prediction = self._make_prediction(self.history)
+                        self._save_learning()
+                elif not had_500_before or table_changed or self.pending_prediction is None:
+                    self.pending_prediction = self._make_prediction(self.history)
             elif self.history and (not had_500_before or table_changed or self.pending_prediction is None):
-                # Only compute pending_prediction if SON500 was just bootstrapped
-                # for the first time on this table or table changed. Never overwrite
-                # an already-locked round prediction mid-betting window!
                 self.pending_prediction = self._make_prediction(self.history)
 
         if save_long_copy is not None:
@@ -7081,7 +7158,12 @@ class RouletteState:
                             if idx_a + 1 < len(chronologically_added):
                                 self.pending_prediction = self._make_prediction(temp_hist)
 
-                        if len(clean) >= 20:
+                        n_new = len(new_items)
+                        if (
+                            len(clean) >= 20
+                            and n_new < 20
+                            and clean[n_new:20] == self.history[:20 - n_new]
+                        ):
                             self.history = clean[:20]
                         else:
                             self.history = ([int(x) for x in new_items] + list(self.history))[:20]
@@ -7113,6 +7195,17 @@ class RouletteState:
                         # Calculate once, immediately, and lock for this round.
                         self.pending_prediction = self._make_prediction(self.history)
                         self._save_learning()
+                    elif (
+                        len(clean) >= 20
+                        and len(self.history) >= 5
+                        and clean[:min(8, len(self.history))] == self.history[:min(8, len(self.history))]
+                    ):
+                        # User expanded SON500 drawer (Genişlet): fill/sync full 20 spins
+                        # without scoring fake rounds.
+                        if self.history[:20] != clean[:20]:
+                            self.history = list(clean[:20])
+                            self.pending_prediction = self._make_prediction(self.history)
+                            self._save_learning()
                     elif clean[:20] == self.history[:len(clean[:20])]:
                         pass
                     elif str(source or "").endswith("resync"):
@@ -7517,6 +7610,30 @@ DOM_SCAN = r"""
     };
   }
 
+  const exactNumber = /^(?:[0-9]|[12][0-9]|3[0-6])$/;
+  function deepVis(el) {
+    let cur = el;
+    for (let d = 0; d < 10 && cur && cur.nodeType === 1; d++, cur = cur.parentElement) {
+      const r = cur.getBoundingClientRect();
+      const s = getComputedStyle(cur);
+      if (r.width <= 1 || r.height <= 1) return false;
+      if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity || "1") <= 0.05) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  let son500Open = false;
+  for (const el of document.querySelectorAll('button,[role="tab"],[role="button"],div,span,a')) {
+    if (!vis(el)) continue;
+    const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toUpperCase();
+    if ((t === "SON 500" || t === "LAST 500" || (/^(?:SON|LAST)\s*500$/.test(t))) && deepVis(el)) {
+      son500Open = true;
+      break;
+    }
+  }
+
   const selectors = [
     '[data-testid*="history"]',
     '[data-testid*="result"]',
@@ -7531,27 +7648,102 @@ DOM_SCAN = r"""
 
   const out = [];
   const seen = new Set();
+  const badAncestorRe = /(hot|cold|sicak|soguk|soğuk|graph|grafik|wheel|racetrack|chip|bet|stake|balance|bakiye|limit|voisin|orphelin|tiers)/i;
 
   for (const sel of selectors) {
     for (const el of document.querySelectorAll(sel)) {
       if (seen.has(el)) continue;
       if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
-      if (!vis(el)) continue;
+      if (!deepVis(el)) continue;
       seen.add(el);
 
-      const txt = (el.innerText || el.textContent || "")
-        .replace(/\s+/g, " ")
-        .trim();
+      const elHint = [
+        el.id || "",
+        el.getAttribute("class") || "",
+        el.getAttribute("data-testid") || "",
+        el.getAttribute("aria-label") || ""
+      ].join(" ");
+      if (badAncestorRe.test(elHint)) continue;
 
-      const nums = (txt.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || [])
-        .map(Number);
-
-      if (nums.length >= 5) {
-        out.push({
-          testid: el.getAttribute("data-testid") || "",
-          cls: el.getAttribute("class") || "",
-          nums: nums.slice(0, 30)
+      const leaves = [];
+      for (const node of el.querySelectorAll('*')) {
+        if (!deepVis(node)) continue;
+        const raw = (node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+        if (!exactNumber.test(raw)) continue;
+        let childAlsoNum = false;
+        for (const ch of node.children || []) {
+          const ct = (ch.innerText || ch.textContent || "").replace(/\s+/g, " ").trim();
+          if (exactNumber.test(ct)) {
+            childAlsoNum = true;
+            break;
+          }
+        }
+        if (childAlsoNum) continue;
+        const nr = node.getBoundingClientRect();
+        if (nr.width < 5 || nr.height < 5 || nr.width > 75 || nr.height > 65) continue;
+        let p = node;
+        let blocked = false;
+        for (let d = 0; d < 5 && p && p !== el; d++, p = p.parentElement) {
+          const ph = [p.id || "", p.getAttribute("class") || "", p.getAttribute("data-testid") || ""].join(" ");
+          const pt = (p.innerText || p.textContent || "").replace(/\s+/g, " ").trim();
+          if (badAncestorRe.test(ph) || /%|SICAK|SOĞUK|SOGUK|HOT|COLD|GRAF[İI]K|GRAPH/i.test(pt)) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+        leaves.push({
+          n: Number(raw),
+          x: nr.left + nr.width / 2,
+          y: nr.top + nr.height / 2
         });
+      }
+
+      if (leaves.length >= 5) {
+        leaves.sort((a, b) => Math.round(a.y / 9) - Math.round(b.y / 9) || a.x - b.x);
+        const ys = leaves.map(l => l.y);
+        const rowSpan = Math.max(...ys) - Math.min(...ys);
+
+        if (!son500Open) {
+          // Drawer is collapsed (Küçült): only the single-row 10-number bar is
+          // genuinely visible. If a wrapper captured multiple rows, isolate the
+          // bottommost horizontal bar row (8..12 numbers).
+          if (rowSpan <= 20 && leaves.length <= 14) {
+            out.push({
+              testid: el.getAttribute("data-testid") || "",
+              cls: el.getAttribute("class") || "",
+              collapsedBar: true,
+              son500Grid: false,
+              nums: leaves.map(l => l.n).slice(0, 14)
+            });
+          } else {
+            const maxY = Math.max(...ys);
+            const bottomRow = leaves
+              .filter(l => Math.abs(l.y - maxY) <= 12)
+              .sort((a, b) => a.x - b.x);
+            if (bottomRow.length >= 8 && bottomRow.length <= 14) {
+              out.push({
+                testid: el.getAttribute("data-testid") || "",
+                cls: el.getAttribute("class") || "",
+                collapsedBar: true,
+                son500Grid: false,
+                nums: bottomRow.map(l => l.n)
+              });
+            }
+          }
+        } else {
+          const isGrid = rowSpan > 20 && leaves.length >= 20;
+          const isBar = rowSpan <= 20 && leaves.length <= 14;
+          if (isGrid || isBar) {
+            out.push({
+              testid: el.getAttribute("data-testid") || "",
+              cls: el.getAttribute("class") || "",
+              collapsedBar: isBar,
+              son500Grid: isGrid,
+              nums: leaves.map(l => l.n).slice(0, 30)
+            });
+          }
+        }
       }
     }
   }
@@ -7560,7 +7752,6 @@ DOM_SCAN = r"""
   // Read only prominent numeric leaves; small chips, racetrack numbers and
   // statistic cells are deliberately penalized.
   const liveCandidates = [];
-  const exactNumber = /^(?:[0-9]|[12][0-9]|3[0-6])$/;
   for (const el of document.querySelectorAll('div,span,p,strong,b')) {
     if (el.children && el.children.length > 0) continue;
     const rawText = el.textContent || '';
@@ -7614,18 +7805,24 @@ DOM_SCAN = r"""
 
 HISTORY500_SCAN = r"""
 (async () => {
+  const ALLOW_EXPAND = true;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => (s || "").replace(/\s+/g, " ").trim().toUpperCase();
   const numRe = /^(?:[0-9]|[12][0-9]|3[0-6])$/;
 
   function visibleStyle(el) {
     try {
-      const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
-      const s = win.getComputedStyle(el);
-      const r = el.getBoundingClientRect();
-      return r.width > 1 && r.height > 1 &&
-             s.display !== "none" && s.visibility !== "hidden" &&
-             Number(s.opacity || 1) !== 0;
+      let cur = el;
+      for (let d = 0; d < 10 && cur && cur.nodeType === 1; d++, cur = cur.parentElement) {
+        const win = (cur.ownerDocument && cur.ownerDocument.defaultView) || window;
+        const s = win.getComputedStyle(cur);
+        const r = cur.getBoundingClientRect();
+        if (r.width <= 1 || r.height <= 1) return false;
+        if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity || 1) <= 0.05) {
+          return false;
+        }
+      }
+      return true;
     } catch (_) {
       return false;
     }
@@ -7690,36 +7887,45 @@ HISTORY500_SCAN = r"""
     return null;
   }
 
-  function numericLeaves(root) {
-    const out = [];
-    if (!root) return out;
-
+  function sortedNumericLeaves(root, minTop = -1) {
+    const recs = [];
+    if (!root) return recs;
+    const seenEls = new Set();
     for (const el of deepQueryAll(root, "*")) {
-      if (!visibleStyle(el)) continue;
+      if (!visibleStyle(el) || seenEls.has(el)) continue;
       const n = numericValue(el);
       if (n === null || n < 0 || n > 36) continue;
-
-      // Avoid counting both a wrapper and its numeric child.
       let childHasSameNumeric = false;
       try {
         for (const ch of el.children || []) {
-          const cn = numericValue(ch);
-          if (cn !== null) {
+          if (numericValue(ch) !== null) {
             childHasSameNumeric = true;
             break;
           }
         }
       } catch (_) {}
       if (childHasSameNumeric) continue;
-
-      out.push(n);
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4 || r.width > 75 || r.height > 65) continue;
+      const cy = r.top + r.height / 2;
+      if (minTop >= 0 && cy < minTop) continue;
+      const ptxt = norm(readableText(parentOf(el) || el));
+      if (/%|BAKIYE|BALANCE|TOPLAM\s*BAHIS|TOTAL\s*BET|VOISINS|ORPHELINS|TIERS|KOMŞU|KOMSU/.test(ptxt)) continue;
+      seenEls.add(el);
+      recs.push({n, x: r.left + r.width / 2, y: cy});
     }
-    return out;
+    recs.sort((a, b) => Math.round(a.y / 8) - Math.round(b.y / 8) || a.x - b.x);
+    return recs.map(r => r.n);
   }
 
   let all = deepQueryAll(document,
-    'button,[role="tab"],[role="button"],div,span,a'
+    'button,[role="tab"],[role="button"],div,span,a,svg'
   );
+
+  const autoButtons = all.filter(
+    el => visibleStyle(el) && /OTOMAT[İI]K\s*OYUN|AUTOMATIC\s*(PLAY|GAME)|AUTO\s*PLAY/.test(norm(readableText(el)))
+  );
+  const autoFound = autoButtons.length > 0;
 
   function findHistoryTab() {
     let found = all.find(el => {
@@ -7735,35 +7941,47 @@ HISTORY500_SCAN = r"""
 
   let tab = findHistoryTab();
   let expandedDrawer = false;
-  if (!tab) {
+  if (!tab && ALLOW_EXPAND) {
+    const autoRect = autoButtons.length ? autoButtons[0].getBoundingClientRect() : null;
     const toggles = [];
-    for (const el of deepQueryAll(document, 'button,[role="button"],a')) {
+    for (const el of deepQueryAll(document, 'button,[role="button"],a,div,span,svg')) {
       if (!visibleStyle(el)) continue;
       const r = el.getBoundingClientRect();
       const text = norm(readableText(el));
-      if (r.width < 12 || r.height < 12 || r.width > 120 || r.height > 120) continue;
-      if (r.left < innerWidth * 0.64 || r.top < innerHeight * 0.45 || r.top > innerHeight * 0.96) continue;
-      if (/OTOMAT|AUTOMATIC|BET|BAHİS|SPIN/.test(text)) continue;
+      if (r.width < 10 || r.height < 10 || r.width > 95 || r.height > 80) continue;
+      if (r.top < innerHeight * 0.42 || r.top > innerHeight * 0.97) continue;
+      if (/OTOMAT|AUTOMATIC|BET|BAHİS|SPIN|VOISIN|ORPHELIN|TIERS/.test(text)) continue;
+      if (numRe.test(text)) continue;
       const hint = [
         el.id || '', el.getAttribute('class') || '',
         el.getAttribute('aria-label') || '', el.getAttribute('title') || '',
-        el.innerHTML || ''
+        el.getAttribute('data-testid') || '',
+        (parentOf(el) && (parentOf(el).getAttribute('class') || '')) || ''
       ].join(' ').toLowerCase();
       let score = 0;
-      if (/(history|statistic|result|drawer|expand|collapse|chevron|arrow|toggle|graph|hot|cold)/.test(hint)) score += 80;
+      if (/(history|statistic|result|drawer|expand|collapse|chevron|arrow|toggle|recent)/.test(hint)) score += 75;
       if (text === '' || text === '⌃' || text === '▲' || text === '˄' || text === '^') score += 25;
-      score += Math.max(0, 22 - Math.abs(innerWidth - r.right) / 8);
-      score += Math.max(0, 22 - Math.abs(innerHeight * 0.76 - (r.top + r.height/2)) / 8);
-      toggles.push({el, score});
+      if (autoRect) {
+        const dy = autoRect.top - r.bottom;
+        const dx = Math.abs((r.left + r.width / 2) - autoRect.right);
+        if (dy >= -12 && dy <= 95 && r.left >= autoRect.left - 120 && r.right <= autoRect.right + 120) {
+          score += 65 - Math.min(40, Math.abs(dy - 22) / 2) - Math.min(25, dx / 8);
+        }
+      } else if (r.left >= innerWidth * 0.50) {
+        score += 20;
+      }
+      if (score >= 45) {
+        toggles.push({el, score});
+      }
     }
-    toggles.sort((a,b) => b.score - a.score);
-    if (toggles.length && toggles[0].score >= 35) {
+    toggles.sort((a, b) => b.score - a.score);
+    if (toggles.length) {
       try {
         toggles[0].el.click();
         expandedDrawer = true;
-        await sleep(700);
+        await sleep(600);
         all = deepQueryAll(document,
-          'button,[role="tab"],[role="button"],div,span,a'
+          'button,[role="tab"],[role="button"],div,span,a,svg'
         );
         tab = findHistoryTab();
       } catch (_) {}
@@ -7772,115 +7990,89 @@ HISTORY500_SCAN = r"""
 
   if (tab) {
     try { tab.click(); } catch (_) {}
-    await sleep(500);
+    await sleep(350);
   }
 
   let roots = [];
 
-  // V2.9.33: targeted read of the exact place the user pointed to:
-  // the SON 500 grid in the lower-right panel, directly above the
-  // "OTOMATIK OYUN / AUTOMATIC PLAY" button. This avoids grabbing lobby
-  // text, racetrack chips, or table cards.
-  const autoButtons = deepQueryAll(document, 'button,[role="button"],div,span,a')
-    .filter(el => visibleStyle(el) && /OTOMAT[İI]K\s*OYUN|AUTOMATIC\s*(PLAY|GAME)|AUTO\s*PLAY/.test(norm(readableText(el))));
-  const autoFound = autoButtons.length > 0;
-  function numsInRect(rect) {
-    const recs = [];
-    const seenEls = new Set();
-    for (const el of deepQueryAll(document, '*')) {
-      if (!visibleStyle(el) || seenEls.has(el)) continue;
-      const n = numericValue(el);
-      if (n === null || n < 0 || n > 36) continue;
-      let childNumeric = false;
-      try {
-        for (const ch of el.children || []) {
-          if (numericValue(ch) !== null) { childNumeric = true; break; }
-        }
-      } catch (_) {}
-      if (childNumeric) continue;
-      const r = el.getBoundingClientRect();
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) continue;
-      const txt = norm(readableText(parentOf(el) || el));
-      if (/BAKIYE|BALANCE|TOPLAM\s*BAHIS|TOTAL\s*BET|BAHIS|BET|JETON|CHIP|VOISINS|ORPHELINS|TIERS|KOMŞU|KOMSU/.test(txt)) continue;
-      seenEls.add(el);
-      recs.push({n, x:cx, y:cy});
-    }
-    recs.sort((a,b) => Math.round(a.y/8)-Math.round(b.y/8) || a.x-b.x);
-    return recs.map(r => r.n);
-  }
-  const panelRects = [];
-  for (const btn of autoButtons.slice(0,4)) {
-    try {
-      const r = btn.getBoundingClientRect();
-      if (r.width < 40 || r.height < 15) continue;
-      panelRects.push({
-        left: Math.max(0, r.left - 430),
-        top: Math.max(0, r.top - 390),
-        right: Math.min(innerWidth, r.right + 60),
-        bottom: Math.max(0, r.top - 2),
-        source: 'auto-button'
-      });
-    } catch (_) {}
-  }
+  // CRITICAL: Only read SON 500 numbers when the SON 500 tab is genuinely visible!
+  // Never read the 430x390 box above OTOMATİK OYUN or whole-page clusters when
+  // the drawer is collapsed, because that captures the 3D wheel (23, 10...) and
+  // the 37-number betting grid!
   if (tab) {
-    try {
-      const tr = tab.getBoundingClientRect();
-      let bottom = innerHeight * 0.97;
-      if (autoButtons.length) {
-        const ar = autoButtons[0].getBoundingClientRect();
-        bottom = Math.max(tr.bottom + 20, ar.top - 2);
-      }
-      panelRects.push({
-        left: Math.max(0, tr.left - 320),
-        top: Math.max(0, tr.bottom - 4),
-        right: Math.min(innerWidth, tr.right + 120),
-        bottom,
-        source: 'son500-tab'
-      });
-    } catch (_) {}
-  }
-  for (const rect of panelRects) {
-    const nums = numsInRect(rect);
-    if (nums.length >= 20 && nums.length <= 650) {
-      roots.push({root:document.body, nums, count:nums.length, depth:1, score:900 + nums.length, source:rect.source});
-    }
-  }
-
-  if (tab) {
+    const tr = tab.getBoundingClientRect();
     let r = tab;
     for (let depth = 0; depth < 12 && r; depth++, r = parentOf(r)) {
-      const nums = numericLeaves(r);
-      if (nums.length >= 20 && nums.length <= 650) {
+      const rr = r.getBoundingClientRect();
+      if (rr.width > 560) break;
+      const nums = sortedNumericLeaves(r, tr.bottom - 4);
+      if (nums.length >= 40 && nums.length <= 650) {
         roots.push({
           root: r,
           nums,
           count: nums.length,
           depth,
-          score: nums.length * 2 + 150 - depth * 4
+          source: 'son500-tab',
+          score: nums.length * 3 + 250 - depth * 4
         });
       }
     }
-  }
 
-  // Fallback: find compact DOM blocks mentioning SON 500.
-  if (!roots.length) {
-    for (const el of deepQueryAll(document, "div,section,aside,main")) {
-      if (!visibleStyle(el)) continue;
-      const t = norm(readableText(el));
-      if (!/\b(?:SON|LAST)\s*500\b/.test(t)) continue;
-      const nums = numericLeaves(el);
-      if (nums.length >= 20 && nums.length <= 650) {
+    // Tight drawer-bounded rectangle below the SON 500 tab header (never reaching
+    // 430px left into the spinning 3D wheel).
+    try {
+      let leftBound = Math.max(0, tr.right - 345);
+      const sicakEl = all.find(el => {
+        const t = norm(readableText(el));
+        return /SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD/.test(t) && visibleStyle(el);
+      });
+      if (sicakEl) {
+        const sr = sicakEl.getBoundingClientRect();
+        if (Math.abs(sr.top - tr.top) <= 30 && sr.left < tr.left) {
+          leftBound = Math.max(0, sr.left - 14);
+        }
+      }
+      let bottomBound = Math.min(innerHeight * 0.96, tr.bottom + 360);
+      if (autoButtons.length) {
+        const ar = autoButtons[0].getBoundingClientRect();
+        if (ar.top > tr.bottom + 40) {
+          bottomBound = Math.min(bottomBound, ar.top - 2);
+        }
+      }
+      const rectRecs = [];
+      const seenRectEls = new Set();
+      for (const el of deepQueryAll(document, '*')) {
+        if (!visibleStyle(el) || seenRectEls.has(el)) continue;
+        const n = numericValue(el);
+        if (n === null || n < 0 || n > 36) continue;
+        let childNum = false;
+        try {
+          for (const ch of el.children || []) {
+            if (numericValue(ch) !== null) { childNum = true; break; }
+          }
+        } catch (_) {}
+        if (childNum) continue;
+        const er = el.getBoundingClientRect();
+        if (er.width < 4 || er.height < 4 || er.width > 55 || er.height > 50) continue;
+        const cx = er.left + er.width / 2;
+        const cy = er.top + er.height / 2;
+        if (cx < leftBound || cx > tr.right + 28 || cy < tr.bottom - 2 || cy > bottomBound) continue;
+        seenRectEls.add(el);
+        rectRecs.push({n, x: cx, y: cy});
+      }
+      rectRecs.sort((a, b) => Math.round(a.y / 8) - Math.round(b.y / 8) || a.x - b.x);
+      const rectNums = rectRecs.map(x => x.n);
+      if (rectNums.length >= 40 && rectNums.length <= 650) {
         roots.push({
-          root: el,
-          nums,
-          count: nums.length,
-          depth: 99,
-          score: nums.length * 2 + 80
+          root: document.body,
+          nums: rectNums,
+          count: rectNums.length,
+          depth: 1,
+          source: 'son500-tab',
+          score: rectNums.length * 3 + 220
         });
       }
-    }
+    } catch (_) {}
   }
 
   const lobbyTileSelector = [
@@ -7921,84 +8113,6 @@ HISTORY500_SCAN = r"""
     (/\bRULET\b|\bROULETTE\b/.test(bodyT) && /STANDART|TURKCE|TÜRKÇE|HIZLI|PRIVE|PRIVÉ|VERSIYON/.test(bodyT) && lobbyCardCount >= 1)
   );
 
-  // V2.9.32: the user's screen shows SON 500 as a visible grid on the
-  // lower-right game panel. Some builds keep the label outside the number
-  // block, inside shadow DOM, or inside a same-origin iframe. Build dense
-  // numeric clusters by layout and pick the largest non-betting cluster.
-  if (!roots.length && !earlyLobbyLike) {
-    const records=[];
-    for (const el of deepQueryAll(document, '*')) {
-      if (!visibleStyle(el)) continue;
-      if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
-      const n = numericValue(el);
-      if (n === null || n < 0 || n > 36) continue;
-      let childNumeric=false;
-      try {
-        for (const ch of el.children || []) {
-          if (numericValue(ch) !== null) { childNumeric=true; break; }
-        }
-      } catch (_) {}
-      if (childNumeric) continue;
-      const r=el.getBoundingClientRect();
-      if (r.width < 3 || r.height < 3 || r.width > 110 || r.height > 90) continue;
-      records.push({el,n,r});
-    }
-
-    const containers=new Map();
-    for (const rec of records) {
-      let p=rec.el;
-      for (let depth=0; depth<14 && p; depth++, p=parentOf(p)) {
-        if (!visibleStyle(p)) continue;
-        let arr=containers.get(p);
-        if (!arr) { arr=[]; containers.set(p,arr); }
-        arr.push(rec);
-      }
-    }
-
-    const scored=[];
-    for (const [el, arrRaw] of containers.entries()) {
-      const seenEls=new Set();
-      const arr=[];
-      for (const rec of arrRaw) {
-        if (!seenEls.has(rec.el)) { seenEls.add(rec.el); arr.push(rec); }
-      }
-      if (arr.length < 20 || arr.length > 650) continue;
-      const r=el.getBoundingClientRect();
-      if (r.width < 90 || r.height < 50) continue;
-      const txt=norm(readableText(el));
-      let score=arr.length * 3;
-      if (/\b(?:SON|LAST)\s*500\b/.test(txt)) score += 150;
-      if (r.left > innerWidth * 0.40) score += 45;
-      if (r.top > innerHeight * 0.25) score += 25;
-      if (r.right > innerWidth * 0.62) score += 15;
-      if (/BAKIYE|BALANCE|TOPLAM\s*BAHIS|TOTAL\s*BET|BAHIS|BET|JETON|CHIP|OTOMATIK\s*OYUN|AUTOMATIC\s*PLAY|VOISINS|ORPHELINS|TIERS|1INCI|2INCI|3UNCU|1ST|2ND|3RD|KOMŞU|KOMSU/.test(txt)) score -= 180;
-      if (/SICAK|SOĞUK|SOGUK|HOT|COLD|GRAFIK|GRAPH|SON\s*500|LAST\s*500|HISTORY|STATISTIC/.test(txt)) score += 70;
-      scored.push({root:el, nums:arr.map(x=>x.n), count:arr.length, depth:120, score});
-    }
-    scored.sort((a,b)=>b.score-a.score || b.count-a.count);
-    if (scored.length) roots.push(scored[0]);
-  }
-
-  // Last fallback: if a SON500 tab is visible, take numbers in a rectangle
-  // below/near it. This matches the screenshot where the grid sits directly
-  // under the "SON 500" tab and above the Automatic Play button.
-  if (!roots.length && tab) {
-    const tr=tab.getBoundingClientRect();
-    const nums=[];
-    for (const el of deepQueryAll(document, '*')) {
-      if (!visibleStyle(el)) continue;
-      const n = numericValue(el);
-      if (n === null || n < 0 || n > 36) continue;
-      const r=el.getBoundingClientRect();
-      if (r.left < tr.left - 320 || r.right > innerWidth + 10) continue;
-      if (r.top < tr.top + 4 || r.top > innerHeight * 0.97) continue;
-      nums.push(n);
-    }
-    if (nums.length >= 20 && nums.length <= 650) {
-      roots.push({root:document.body, nums, count:nums.length, depth:150, score:nums.length + 60});
-    }
-  }
-
   roots.sort((a,b) => (b.score || b.count) - (a.score || a.count) || b.count - a.count || a.depth - b.depth);
   const best = roots[0] || null;
   const lobbyLike = earlyLobbyLike || (!autoFound && !best && (
@@ -8027,6 +8141,11 @@ HISTORY500_SCAN = r"""
   };
 })()
 """
+
+ACTIVE_HISTORY500_SCAN = HISTORY500_SCAN.replace(
+    "const ALLOW_EXPAND = true;",
+    "const ALLOW_EXPAND = false;",
+)
 
 COLLECTOR_LOBBY_CLICK_SCRIPT = r"""
 (() => {
@@ -11582,10 +11701,12 @@ class ChromeBridge(threading.Thread):
 
                         if now - float(last_500_scan.get(sid, 0.0)) >= 6.0:
                             last_500_scan[sid] = now
+                            with self.state.lock:
+                                has_active_500 = len(self.state.table_history_500) >= 40
                             self.send(
                                 "Runtime.evaluate",
                                 {
-                                    "expression": HISTORY500_SCAN,
+                                    "expression": ACTIVE_HISTORY500_SCAN if has_active_500 else HISTORY500_SCAN,
                                     "returnByValue": True,
                                     "awaitPromise": True,
                                 },
@@ -12953,9 +13074,8 @@ class ChromeBridge(threading.Thread):
                         raw_table_id = str(meta.get("table_id","") or "")
                         is_collector = bool(meta.get("collector"))
                         panel_seen = bool(
-                            value.get("autoFound")
-                            or value.get("foundTab")
-                            or str(value.get("source") or "") in ("auto-button", "son500-tab")
+                            value.get("foundTab")
+                            or str(value.get("source") or "") == "son500-tab"
                         )
                         sid_meta = str(meta.get("session") or "")
                         table_id, display_name = self._collector_table_identity(
@@ -13043,7 +13163,7 @@ class ChromeBridge(threading.Thread):
                             )
                         ):
                             return
-                        if len(nums) >= 20 and table_id and ((not is_collector) or panel_seen):
+                        if len(nums) >= 40 and table_id and panel_seen:
                             source_label = (
                                 "SEKMELİ TOPLA sağ-alt SON500 paneli"
                                 if is_collector
@@ -13082,7 +13202,7 @@ class ChromeBridge(threading.Thread):
                             elapsed = max(0.0, now_wait - started) if started else 0.0
                             has_son500_tab = bool(value.get("foundTab") or str(value.get("source") or "") == "son500-tab")
                             skip_no_panel = elapsed >= TAB_WALK_NO_SON500_SKIP_SECONDS and not has_son500_tab
-                            skip_empty_panel = elapsed >= TAB_WALK_EMPTY_SON500_SKIP_SECONDS and has_son500_tab and len(nums) < 20
+                            skip_empty_panel = elapsed >= TAB_WALK_EMPTY_SON500_SKIP_SECONDS and has_son500_tab and len(nums) < 40
                             if skip_no_panel or skip_empty_panel:
                                 key = str(self.table_scan_current_click_key or table_id)
                                 self.table_scan_probe_done.add(key)
@@ -13132,7 +13252,7 @@ class ChromeBridge(threading.Thread):
                             return
                         nums = value.get("nums",[])
                         title = value.get("title","")
-                        if len(nums) >= 20:
+                        if len(nums) >= 40 and bool(value.get("foundTab")):
                             if sid_ctx and sid_ctx in self.session_table_activity:
                                 self.session_table_activity[sid_ctx]["last"] = time.time()
                             self.state.update_table_history_500(
@@ -13730,11 +13850,28 @@ class App:
         win.geometry("860x430")
         win.minsize(680, 320)
 
+        top_bar = tk.Frame(win, bg=self.BG)
+        top_bar.pack(fill="x", padx=10, pady=(10, 6))
         summary = tk.Label(
-            win, text="Masa bankaları yükleniyor...",
+            top_bar, text="Masa bankaları yükleniyor...",
             font=("Segoe UI", 10, "bold"), fg=self.GREEN, bg=self.BG,
         )
-        summary.pack(fill="x", padx=10, pady=(10, 6))
+        summary.pack(side="left", fill="x", expand=True)
+        tk.Button(
+            top_bar,
+            text="GEÇMİŞ MASA VERİLERİNİ SİL",
+            command=self.clear_past_tables_ui,
+            font=("Segoe UI", 8, "bold"),
+            bg=self.PANEL2,
+            fg=self.YELLOW,
+            activebackground=self.PANEL2,
+            activeforeground=self.RED,
+            relief="flat",
+            bd=0,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        ).pack(side="right")
         frame = tk.Frame(win, bg=self.BG)
         frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         columns = ("name", "count", "fresh", "updated", "source")
@@ -14020,12 +14157,20 @@ class App:
         self.archive_line.pack(fill="x",padx=8,pady=(1,2))
         self.collector_line=tk.Label(data,text="ÇOKLU TOPLAYICI: keşif bekleniyor",font=("Consolas",8,"bold"),justify="left",anchor="w",fg=self.GREEN,bg=self.PANEL,wraplength=380)
         self.collector_line.pack(fill="x",padx=8,pady=(1,2))
+        bank_bar=tk.Frame(data,bg=self.PANEL)
+        bank_bar.pack(fill="x",padx=8,pady=(1,5))
         tk.Button(
-            data,text="MASA BANKALARINI GÖR",command=self.open_table_banks,
+            bank_bar,text="MASA BANKALARINI GÖR",command=self.open_table_banks,
             font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.TEXT,
             activebackground=self.PANEL2,activeforeground=self.GREEN,
             relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
-        ).pack(fill="x",padx=8,pady=(1,5))
+        ).pack(side="left",fill="x",expand=True,padx=(0,2))
+        tk.Button(
+            bank_bar,text="GEÇMİŞ MASA VERİLERİNİ SİL",command=self.clear_past_tables_ui,
+            font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.YELLOW,
+            activebackground=self.PANEL2,activeforeground=self.RED,
+            relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
+        ).pack(side="left",fill="x",expand=True,padx=(2,0))
         scan_bar=tk.Frame(data,bg=self.PANEL)
         scan_bar.pack(fill="x",padx=8,pady=(0,5))
         tk.Button(
@@ -14327,6 +14472,27 @@ class App:
 
     def clear_performance_view(self):
         self.state.reset_performance_stats()
+        self._last_render_sig = None
+        self._last_status_sig = None
+        try:
+            self.refresh()
+        except Exception:
+            pass
+
+    def clear_past_tables_ui(self):
+        self.state.clear_all_past_table_data()
+        try:
+            with self.bridge.collector_lock:
+                self.bridge.collector_seen = {}
+                self.bridge.collector_inflight = set()
+            self.bridge.table_scan_probed_keys = set()
+            self.bridge.table_scan_probe_done = set()
+            self.bridge.table_scan_probe_success = set()
+            self.bridge.table_scan_probe_fail = set()
+            self.bridge.table_scan_probe_skip = set()
+            self.bridge.table_scan_visited = set()
+        except Exception:
+            pass
         self._last_render_sig = None
         self._last_status_sig = None
         try:

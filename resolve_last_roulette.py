@@ -15,35 +15,36 @@ def good(url):
         return False
     blocked = (
         "jsessionid", "pragmaticplaylive", "pragmaticplay.net",
-        "/game.do", "/api/", "sessionid=", "token=",
-        "livechat", "google.", "facebook.", "youtube.", "cloudflare"
+        "/game.do", "/api/", "sessionid=", "token="
     )
     if any(x in low for x in blocked):
         return False
     return any(x in low for x in (
-        "roulette", "rulet", "pragmatic", "opengames=", "searchterm=",
-        "live-casino", "livecasino", "casino", "meritbet"
+        "roulette", "rulet", "pragmatic", "opengames=", "searchterm="
     ))
 
 
 def stable_entry(url):
-    """Keep the exact last visited user URL while stripping only one-time session tokens."""
     u = str(url or "").strip()
     if not good(u):
         return ""
     try:
         x = urllib.parse.urlsplit(u)
-        qs = urllib.parse.parse_qsl(x.query, keep_blank_values=True)
+        qs = urllib.parse.parse_qsl(x.query, keep_blank_values=False)
         drop = {
-            "sessionid", "jsessionid", "token", "auth", "jwt",
-            "ticket", "sid", "otk", "keycode", "launchtoken"
+            "opengames","gamenames","gameid","tableid","table_id",
+            "operatorgameid","sessionid","token","launchurl","gameurl","searchterm"
         }
-        qs = [(k, v) for k, v in qs if str(k).lower() not in drop]
+        qs = [(k,v) for k,v in qs if str(k).lower() not in drop]
         path = x.path or "/"
-        return urllib.parse.urlunsplit((
-            x.scheme, x.netloc, path,
-            urllib.parse.urlencode(qs, doseq=True), x.fragment or ""
-        ))
+        low = path.lower()
+        if "/live-casino/" in low:
+            idx = low.find("/live-casino/")
+            path = path[:idx] + "/live-casino/home"
+        elif "/livecasino/" in low:
+            idx = low.find("/livecasino/")
+            path = path[:idx] + "/livecasino/home"
+        return urllib.parse.urlunsplit((x.scheme,x.netloc,path,urllib.parse.urlencode(qs),""))
     except Exception:
         return ""
 
@@ -67,15 +68,15 @@ def read_file(path):
     except Exception:
         return ""
 
-# 1) Persistent shared URL from V2.9.1+ (upgrade stripped legacy URLs if local file has full query)
-u_persist = read_file(PERSIST)
-u_local = read_file(HERE / "last_roulette_url.txt")
-if u_persist and ("?" in u_persist or not u_local):
-    print(u_persist); raise SystemExit(0)
-if u_local:
-    save(u_local); print(u_local); raise SystemExit(0)
-if u_persist:
-    print(u_persist); raise SystemExit(0)
+# 1) Persistent shared URL from V2.9.1+
+u = read_file(PERSIST)
+if u:
+    print(u); raise SystemExit(0)
+
+# 2) Local file in this folder
+u = read_file(HERE / "last_roulette_url.txt")
+if u:
+    save(u); print(u); raise SystemExit(0)
 
 # 3) Sibling/nearby older program folders (newest first)
 try:
