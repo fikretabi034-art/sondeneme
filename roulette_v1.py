@@ -3286,14 +3286,33 @@ def choose_net_number(
         key=lambda n:(-total[n], -float(combined.get(n,0.0) or 0.0), n),
     )
 
-    chosen = int(ordered[0])
+    # Primary NET SAYI must be led by at least one active family's #1 pick
+    # so AİLE DESTEĞİ is never 0/4 and NET SİNYAL never drops artificially.
+    net_score = {n: float(total[n]) for n in range(37)}
+    for fam, pick_n in family_picks.items():
+        p_int = int(pick_n)
+        if 0 <= p_int <= 36:
+            net_score[p_int] += 0.38 * float(fw.get(fam, 0.0))
+
+    family_leader_set = {
+        int(pick_n) for pick_n in family_picks.values()
+        if isinstance(pick_n, int) and 0 <= int(pick_n) <= 36
+    }
+    if family_leader_set:
+        chosen = max(
+            family_leader_set,
+            key=lambda n: (net_score[n], total[n], float(combined.get(n, 0.0) or 0.0), -n),
+        )
+    else:
+        chosen = int(ordered[0])
+
     leader_total = max(1e-9, float(total[chosen]))
     # Select the 4 backups (YEDEK-4) by combining total score, walk-forward/pool
     # combined probability, and uncovered K1 wheel-pocket probability mass so
     # strong ORTAK/TABLO transitions populate YEDEK-4 and K1/K2 packages.
     top5 = [chosen]
     covered_k1 = set(wheel_neighbors(chosen, 1))
-    remaining = [int(n) for n in ordered[1:]]
+    remaining = [int(n) for n in ordered if int(n) != chosen]
     while len(top5) < 5 and remaining:
         def _backup_key(n):
             nb1_set = set(wheel_neighbors(n, 1))
@@ -3322,19 +3341,29 @@ def choose_net_number(
     ]
     leader_family = max(
         family_dists,
-        key=lambda fam:(fw[fam] * family_dists[fam].get(chosen,0.0), fam),
+        key=lambda fam:(
+            1 if int(family_picks.get(fam, -1)) == chosen else 0,
+            fw[fam] * family_dists[fam].get(chosen,0.0),
+            fam,
+        ),
     )
 
     # Relative signal-strength indicator, NOT a roulette probability.
-    runner_score = float(total[ordered[1]]) if len(ordered) > 1 else 0.0
-    leader_score = float(total[chosen])
+    other_Ordered = [n for n in ordered if int(n) != chosen]
+    runner_score = float(total[other_Ordered[0]]) if other_Ordered else 0.0
+    leader_score = max(float(total[chosen]), float(net_score[chosen]))
     margin_ratio = max(0.0, (leader_score - runner_score) / max(1e-9, leader_score))
-    support_ratio = len(family_supporters) / max(1, len(family_dists))
+    near_supporters = sum(
+        1.0 if int(family_picks.get(fam, -1)) == chosen
+        else (0.55 if float(dist.get(chosen, 0.0)) >= 0.75 else 0.0)
+        for fam, dist in family_dists.items()
+    )
+    support_ratio = min(1.0, near_supporters / max(1, len(family_dists)))
     avg_family_skill = sum(raw_fw.values()) / max(1, len(raw_fw))
     signal_score = max(1.0, min(
         99.0,
-        32.0 + 34.0 * support_ratio + 22.0 * min(1.0, margin_ratio / 0.45)
-        + 11.0 * min(1.0, max(0.0, avg_family_skill - 0.75) / 0.55)
+        36.0 + 34.0 * support_ratio + 19.0 * min(1.0, margin_ratio / 0.42)
+        + 10.0 * min(1.0, max(0.0, avg_family_skill - 0.75) / 0.55)
     ))
 
     return {
@@ -5789,6 +5818,7 @@ class RouletteState:
                         dirty_long = True
                 added_count = len(added)
 
+            had_500_before = len(self.table_history_500) >= 20
             dirty_500 = clean != previous_500
             self.table_history_500 = clean
             self.table_history_table = incoming_table
@@ -5889,7 +5919,10 @@ class RouletteState:
                 self.pending_prediction = self._make_prediction(self.history)
                 self._save_learning()
 
-            elif self.history and (dirty_long or dirty_500 or table_changed or self.pending_prediction is None):
+            elif self.history and (not had_500_before or table_changed or self.pending_prediction is None):
+                # Only compute pending_prediction if SON500 was just bootstrapped
+                # for the first time on this table or table changed. Never overwrite
+                # an already-locked round prediction mid-betting window!
                 self.pending_prediction = self._make_prediction(self.history)
 
         if save_long_copy is not None:
@@ -6025,7 +6058,29 @@ class RouletteState:
         tid = re.sub(r"[^A-Za-z0-9_-]+","_",str(self.pragmatic_table_id or "")).strip("_")
         if tid:
             return f"pragmatic_{tid}"
-        return str(table_name or self.table_name or "default")
+        raw = str(table_name or "").strip()
+        norm = raw.lower()
+        is_gen = (
+            not norm
+            or norm in (
+                "roulette",
+                "rulet",
+                "pragmatic play",
+                "pragmatic play live",
+                "pragmatic play lobby",
+                "live casino",
+                "canlı casino",
+                "canli casino",
+            )
+            or "lobby" in norm
+            or "lobi" in norm
+            or norm.startswith(("http://", "https://"))
+            or "/desktop/" in norm
+            or "client." in norm
+        )
+        if is_gen and self.table_name:
+            return str(self.table_name)
+        return str(raw or self.table_name or "default")
 
     def set_pragmatic_identity(self, table_id="", operator_game_id="", theme_code="", title=""):
         tid=str(table_id or "").strip()
@@ -6947,18 +7002,45 @@ class RouletteState:
                     if new_items:
                         # new_items are newest-first; replay chronologically.
                         temp_hist = list(self.history)
-                        for actual in reversed(new_items):
+                        chronologically_added = list(reversed(new_items))
+                        for idx_a, actual in enumerate(chronologically_added):
                             self._safe_score_pending(actual)
                             self.session_results.append(int(actual))
                             self.session_results = self.session_results
                             temp_hist = [int(actual)] + temp_hist[:19]
-                            self.pending_prediction = self._make_prediction(temp_hist)
+                            if idx_a + 1 < len(chronologically_added):
+                                self.pending_prediction = self._make_prediction(temp_hist)
 
                         if len(clean) >= 20:
                             self.history = clean[:20]
                         else:
                             self.history = ([int(x) for x in new_items] + list(self.history))[:20]
-                        # Recalculate once with the exact received last20.
+
+                        # Immediately advance SON500, UZUN ARŞİV, and ORTAK HAVUZ with the
+                        # newly landed spin(s) BEFORE computing pending_prediction so the
+                        # calculation is 100% final the instant the spin lands!
+                        if self.table_history_500:
+                            add_500 = detect_new_front_large(
+                                self.table_history_500[:40],
+                                self.history[:20],
+                                max_new=20,
+                            )
+                            if add_500:
+                                self.table_history_500 = (list(add_500) + list(self.table_history_500))[:500]
+                        if self.table_long_history:
+                            add_long = detect_new_front_large(
+                                self.table_long_history[:40],
+                                self.history[:20],
+                                max_new=20,
+                            )
+                            if add_long:
+                                self.table_long_history = list(add_long) + list(self.table_long_history)
+                                t_id_now = str(self._storage_identity(self.table_name or incoming_table or ""))
+                                key_now = safe_table_key(t_id_now or "roulette")
+                                self._pool_memory_tables[key_now] = list(self.table_long_history)
+                                self._pool_dirty = True
+
+                        # Calculate once, immediately, and lock for this round.
                         self.pending_prediction = self._make_prediction(self.history)
                         self._save_learning()
                     elif clean[:20] == self.history[:len(clean[:20])]:
@@ -11635,7 +11717,7 @@ class ChromeBridge(threading.Thread):
         try:
             u = urllib.parse.urlsplit(str(url or ""))
             host = str(u.hostname or "")
-            if not host or not host.lower().startswith("games."):
+            if not host or not host.lower().startswith(("games.", "client.")):
                 return None
             qs = urllib.parse.parse_qs(u.query)
             table_id = str((qs.get("tableId") or [""])[0] or "")
