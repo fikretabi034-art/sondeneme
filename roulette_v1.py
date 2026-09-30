@@ -5071,37 +5071,37 @@ class RouletteState:
                 by_key[active_key] = active_seq
                 key_mtime[active_key] = now
 
-        def _key_sort(k):
-            is_active = 0 if k == active_key else 1
-            is_prag = 0 if k.startswith("pragmatic_") else 1
-            # Prefer active table, then real pragmatic_ tables, then newest mtime, then longest archive
-            return (is_active, is_prag, -key_mtime.get(k, 0.0), -len(by_key.get(k, [])), k)
-
-        def _seq_grams(seq, width=12):
+        def _all_grams(seq, width=12):
             n = len(seq)
             if n < width:
                 return {tuple(seq)}
-            step = max(2, n // 120)
-            return {tuple(seq[i:i + width]) for i in range(0, n - width + 1, step)}
+            return {tuple(seq[i:i + width]) for i in range(n - width + 1)}
+
+        def _probe_grams(seq, width=12, step=16):
+            n = len(seq)
+            if n < width:
+                return (tuple(seq),)
+            return tuple(tuple(seq[i:i + width]) for i in range(0, n - width + 1, step))
+
+        def _key_sort(k):
+            is_active = 0 if k == active_key else 1
+            is_url = 1 if ("http_" in k or "https_" in k) else 0
+            is_prag = 0 if (k.startswith("pragmatic_") and not is_url) else 1
+            # Prefer active table, then real pragmatic_ tables, then newest mtime, then longest archive
+            return (is_active, is_url, is_prag, -key_mtime.get(k, 0.0), -len(by_key.get(k, [])), k)
 
         ordered_keys = sorted(by_key, key=_key_sort)
         unique_seqs = []
-        unique_grams = []
+        combined_existing_grams = set()
         for k in ordered_keys:
             seq = by_key[k]
             if len(seq) < 20:
                 continue
-            grams = _seq_grams(seq, 12)
-            duplicate_idx = None
-            for idx, existing_grams in enumerate(unique_grams):
-                if grams & existing_grams:
-                    duplicate_idx = idx
-                    break
-            if duplicate_idx is not None:
+            probes = _probe_grams(seq, 12, 16)
+            if any(p in combined_existing_grams for p in probes):
                 continue
-            else:
-                unique_seqs.append(seq)
-                unique_grams.append(grams)
+            unique_seqs.append(seq)
+            combined_existing_grams.update(_all_grams(seq, 12))
 
         pooled = []
         for idx, seq in enumerate(unique_seqs):
