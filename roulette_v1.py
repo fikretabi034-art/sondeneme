@@ -1019,56 +1019,80 @@ def choose_live_dom_candidate(candidates, current_history):
 
     best = None
 
+    # Pass 1: strictly check forward (newest-first) orientation across all DOM candidates.
+    # Never allow a reversed candidate to compete against a valid forward match
+    # (prevents short palindromes like 11-36-11 from injecting reversed history).
     for nums, meta in prepared:
-        variants = [("forward", nums)]
-        rev = list(reversed(nums))
-        if rev != nums:
-            variants.append(("reverse", rev))
+        cand = nums
+        min_tail = 3 if len(cand) <= 12 else 4
+        max_shift = min(16, max(0, len(cand) - min_tail))
 
-        for orientation, cand in variants:
-            min_tail = 3 if len(cand) <= 12 else 4
-            max_shift = min(16, max(0, len(cand) - min_tail))
+        for shift in range(max_shift + 1):
+            max_cmp = min(len(current), len(cand) - shift, 20)
+            overlap = 0
+            for i in range(max_cmp):
+                if cand[shift + i] != current[i]:
+                    break
+                overlap += 1
 
-            for shift in range(max_shift + 1):
-                max_cmp = min(len(current), len(cand) - shift, 20)
-                overlap = 0
-                for i in range(max_cmp):
-                    if cand[shift + i] != current[i]:
-                        break
-                    overlap += 1
+            if shift == 0:
+                req_ov = min(5, len(cand), len(current))
+            elif len(cand) <= 12:
+                req_ov = 3 if (len(cand) - shift) == 3 else min(4, len(current))
+            else:
+                req_ov = min(5, max(4, len(cand) - shift), len(current))
 
-                if shift == 0:
-                    req_ov = min(5, len(cand), len(current))
-                elif len(cand) <= 12:
-                    req_ov = 3 if (len(cand) - shift) == 3 else min(4, len(current))
-                else:
-                    req_ov = min(5, max(4, len(cand) - shift), len(current))
+            if overlap < req_ov:
+                continue
 
-                if overlap < req_ov:
-                    continue
+            relation = "ahead" if shift > 0 else "same"
+            priority = 2 if shift > 0 else 1
 
-                relation = "ahead" if shift > 0 else "same"
-                priority = 2 if shift > 0 else 1
+            # Prefer smaller shift (-shift) for equal overlap so palindrome sub-matches
+            # never beat the true shortest new-spin shift.
+            score = (
+                priority,
+                overlap,
+                -shift,
+                len(cand),
+            )
 
-                score = (
-                    priority,
-                    overlap,
-                    shift if shift > 0 else 0,
-                    len(cand),
-                )
+            row = {
+                "nums": cand,
+                "meta": meta,
+                "relation": relation,
+                "new_count": shift,
+                "overlap": overlap,
+                "orientation": "forward",
+                "_score": score,
+            }
 
-                row = {
-                    "nums": cand,
-                    "meta": meta,
-                    "relation": relation,
-                    "new_count": shift,
-                    "overlap": overlap,
-                    "orientation": orientation,
-                    "_score": score,
+            if best is None or row["_score"] > best["_score"]:
+                best = row
+
+    # Pass 2: if no forward match exists, check if current[:10] was previously
+    # corrupted by a reversed block (e.g. reversed(current[:10]) appears inside cand).
+    if best is None and len(current) >= 8:
+        rev_cur = list(reversed(current[:10]))
+        rev_grams = {
+            tuple(rev_cur[i:i + 5])
+            for i in range(len(rev_cur) - 4)
+        }
+        for nums, meta in prepared:
+            if len(nums) >= 8:
+                cand_grams = {
+                    tuple(nums[i:i + 5])
+                    for i in range(len(nums) - 4)
                 }
-
-                if best is None or row["_score"] > best["_score"]:
-                    best = row
+                if rev_grams & cand_grams:
+                    return {
+                        "nums": nums,
+                        "meta": meta,
+                        "relation": "resync",
+                        "new_count": 0,
+                        "overlap": 5,
+                        "orientation": "forward",
+                    }
 
     if best is None:
         return None
@@ -4193,6 +4217,36 @@ def safe_lobby_entry_url(url):
         return ""
 
 
+def safe_last_page_url(url):
+    """
+    Keep the exact last visited user page (including searchTerm, openGames,
+    gameNames, and current route) while stripping only one-time auth/session tokens.
+    """
+    try:
+        raw = str(url or "").strip()
+        if not raw.startswith(("http://", "https://")):
+            return ""
+        u = urllib.parse.urlsplit(raw)
+        if not u.netloc:
+            return ""
+        qs = urllib.parse.parse_qsl(u.query, keep_blank_values=True)
+        drop = {
+            "token", "session", "sessionid", "jsessionid", "auth",
+            "jwt", "ticket", "sid", "otk", "keycode", "launchtoken",
+        }
+        cleaned = [
+            (k, v) for k, v in qs
+            if str(k).lower() not in drop
+        ]
+        path = u.path or "/"
+        return urllib.parse.urlunsplit((
+            u.scheme, u.netloc, path,
+            urllib.parse.urlencode(cleaned, doseq=True), u.fragment or ""
+        ))
+    except Exception:
+        return ""
+
+
 def collector_refresh_due(now, last_success, last_attempt, has_error):
     if last_success and now - last_success < COLLECTOR_REFRESH_SECONDS:
         return False
@@ -5919,6 +5973,19 @@ class RouletteState:
                 self.pending_prediction = self._make_prediction(self.history)
                 self._save_learning()
 
+            elif (
+                self.history
+                and same_table
+                and live_alignment is None
+                and len(clean) >= 50
+                and not detect_new_front(clean[:20], self.history[:20], max_new=6)
+            ):
+                # Self-heal if live history became desynced (e.g. from an older
+                # session or reversed DOM block) while authoritative SON500 is active.
+                self.history = list(clean[:20])
+                self.pending_prediction = self._make_prediction(self.history)
+                self._save_learning()
+
             elif self.history and (not had_500_before or table_changed or self.pending_prediction is None):
                 # Only compute pending_prediction if SON500 was just bootstrapped
                 # for the first time on this table or table changed. Never overwrite
@@ -6226,6 +6293,18 @@ class RouletteState:
                 int(x) for x in data.get("session_results", [])
                 if str(x).isdigit() and 0 <= int(x) <= 36
             ]
+            # Self-heal any reversed palindrome tail injected into session_results by
+            # the legacy reversed DOM-bar bug.
+            for r_len in range(min(10, len(seq) // 2), 4, -1):
+                tail = seq[-r_len:]
+                if len(set(tail)) < 3:
+                    continue
+                if seq[-2 * r_len:-r_len] == list(reversed(tail)):
+                    seq = seq[:-r_len]
+                    break
+                if len(seq) >= 2 * r_len + 1 and seq[-2 * r_len - 1:-r_len - 1] == list(reversed(tail)):
+                    seq = seq[:-r_len]
+                    break
 
             self.session_results = seq or list(reversed(clean))
             self.expert_loss = {
@@ -6872,17 +6951,12 @@ class RouletteState:
 
     def reset_performance_stats(self):
         """
-        Reset all live performance/validation counters (PERFORMANS, RİSK/EV,
-        LOCKED LIVE, K1/K2 totals, 12-round lists, and R100/R300/ALL source counters)
-        WITHOUT touching any collected spin history (SON20, SON500, UZUN ARŞİV, ORTAK HAVUZ).
+        Reset only the visible GERÇEK PERFORMANS scoreboards (PERFORMANS, RİSK/EV,
+        LOCKED LIVE, K1/K2 totals, and 12-round lists) WITHOUT touching collected spin
+        history (SON20, SON500, UZUN ARŞİV, ORTAK HAVUZ) OR learned model/source
+        weights (expert_loss, expert_trials, expert_hits, source_hits).
         """
         with self.lock:
-            self.expert_loss = {name: 0.0 for name in EXPERT_NAMES}
-            self.expert_trials = 0
-            self.expert_hits = {
-                name: {"trials": 0, "exact": 0, "top5": 0, "neighbor5": 0}
-                for name in EXPERT_NAMES
-            }
             self.validation = {
                 "trials": 0,
                 "exact": 0,
@@ -6918,10 +6992,6 @@ class RouletteState:
                 "started": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "rows": [],
                 "frozen": False,
-            }
-            self.source_hits = {
-                name: {"trials": 0, "exact": 0, "top5": 0}
-                for name in SOURCE_NAMES
             }
             if self.history:
                 self.pending_prediction = self._make_prediction(self.history)
@@ -7045,6 +7115,10 @@ class RouletteState:
                         self._save_learning()
                     elif clean[:20] == self.history[:len(clean[:20])]:
                         pass
+                    elif str(source or "").endswith("resync"):
+                        self.history = (list(clean) + list(self.history[len(clean):]))[:20]
+                        self.pending_prediction = self._make_prediction(self.history)
+                        self._save_learning()
                     else:
                         return
 
@@ -9264,10 +9338,12 @@ class ChromeBridge(threading.Thread):
                     low = u.lower()
                     blocked = (
                         "jsessionid", "sessionid=", "token=",
-                        "pragmaticplaylive", "/game.do", "/api/",
+                        "pragmaticplaylive", "pragmaticplay.net", "/game.do", "/api/",
                     )
                     if not any(x in low for x in blocked):
-                        return safe_lobby_entry_url(u)
+                        cleaned = safe_last_page_url(u)
+                        if cleaned:
+                            return cleaned
             except Exception:
                 pass
         return ""
@@ -10349,20 +10425,29 @@ class ChromeBridge(threading.Thread):
             return i
 
     def _safe_return_url(self, ti):
-        """Persist only a top-level casino/wrapper URL, never ephemeral Pragmatic tokens."""
+        """Persist the exact user-visited casino/lobby/game-wrapper page URL, never ephemeral Pragmatic iframe tokens."""
         try:
             url = str((ti or {}).get("url", "") or "").strip()
             title = str((ti or {}).get("title", "") or "").lower()
             typ = str((ti or {}).get("type", "") or "").lower()
+            tid = str((ti or {}).get("targetId", "") or "").strip()
             low = url.lower()
             if typ and typ != "page":
                 return ""
+            if tid and (
+                tid == str(getattr(self, "table_scan_target_id", "") or "")
+                or tid in getattr(self, "table_scan_probe_targets", {})
+            ):
+                return ""
+            if url and url in getattr(self, "table_scan_probe_urls", set()):
+                return ""
             if not url.startswith(("http://", "https://")):
                 return ""
-            # Avoid persisting direct game/session URLs or credentials/tokens.
+            # Avoid persisting direct iframe game/session URLs, credentials/tokens, or third-party widgets.
             blocked = (
                 "jsessionid", "pragmaticplaylive", "pragmaticplay.net",
-                "/game.do", "/api/", "sessionid=", "token="
+                "/game.do", "/api/", "sessionid=", "token=",
+                "livechat", "google.", "facebook.", "youtube.", "cloudflare"
             )
             if any(x in low for x in blocked):
                 return ""
@@ -10371,10 +10456,13 @@ class ChromeBridge(threading.Thread):
                 or "rulet" in low or "rulet" in title
                 or "pragmatic" in low or "pragmatic" in title
                 or "opengames=" in low or "searchterm=" in low
+                or "live-casino" in low or "livecasino" in low
+                or "casino" in low or "casino" in title
+                or "meritbet" in low
             )
             if not wanted:
                 return ""
-            return safe_lobby_entry_url(url)
+            return safe_last_page_url(url)
         except Exception:
             return ""
 
@@ -10991,6 +11079,25 @@ class ChromeBridge(threading.Thread):
                 },
                 session_id=sid
             )
+            if not getattr(self, "_startup_url_restored", False):
+                has_web_page = any(
+                    str(ti.get("type", "") or "").lower() == "page"
+                    and str(ti.get("url", "") or "").startswith(("http://", "https://"))
+                    for ti in self.target_info.values()
+                )
+                if has_web_page:
+                    self._startup_url_restored = True
+                else:
+                    info = self.session_info.get(sid, {}) or {}
+                    cur_url = str(info.get("url", "") or "").strip().lower()
+                    if (
+                        str(info.get("type", "") or "").lower() == "page"
+                        and (not cur_url or cur_url in ("about:blank", "chrome://newtab/", "chrome://newtab"))
+                    ):
+                        saved_url = self._saved_lobby_url()
+                        if saved_url:
+                            self._startup_url_restored = True
+                            self.send("Page.navigate", {"url": saved_url}, session_id=sid)
         except Exception:
             pass
 
@@ -12764,13 +12871,23 @@ class ChromeBridge(threading.Thread):
                     value = obj.get("result",{}).get("result",{}).get("value")
                     sid_ctx = context if isinstance(context,str) else ""
                     if sid_ctx and isinstance(value,dict):
+                        href_val = str(value.get("href","") or "")
+                        title_val = str(value.get("title","") or "")
                         self.session_visibility[sid_ctx] = {
                             "visibility": str(value.get("visibility","") or ""),
                             "focus": bool(value.get("focus",False)),
-                            "href": str(value.get("href","") or ""),
-                            "title": str(value.get("title","") or ""),
+                            "href": href_val,
+                            "title": title_val,
                             "time": time.time(),
                         }
+                        if href_val and not self._is_collector_session(sid_ctx):
+                            tid_ctx = self.session_targets.get(sid_ctx, "")
+                            self.save_roulette_url({
+                                "targetId": tid_ctx,
+                                "type": "page",
+                                "url": href_val,
+                                "title": title_val,
+                            })
                         self._select_active_table()
                 except Exception:
                     pass
@@ -12807,6 +12924,8 @@ class ChromeBridge(threading.Thread):
                             src = "DOM canlı kilitli"
                             if relation == "ahead" and new_count:
                                 src = f"DOM canlı kilitli +{new_count}"
+                            elif relation == "resync":
+                                src = "DOM canlı kilitli resync"
 
                             self.state.update_results(
                                 chosen["nums"],
@@ -13559,17 +13678,40 @@ class App:
         except Exception:
             return None
 
+    def _save_last_ui_panel(self, key):
+        try:
+            p = os.path.join(persistent_data_dir(), "last_ui_panel.txt")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(str(key or ""))
+        except Exception:
+            pass
+
+    def _restore_last_ui_panel(self):
+        try:
+            p = os.path.join(persistent_data_dir(), "last_ui_panel.txt")
+            if os.path.exists(p):
+                saved = open(p, "r", encoding="utf-8", errors="ignore").read().strip()
+            else:
+                saved = "data"
+            if saved and saved in self.detail_frames:
+                self.toggle_panel(saved)
+        except Exception:
+            pass
+
     def toggle_panel(self, key):
         current = getattr(self,"_open_panel",None)
         for frame in self.detail_frames.values():
             frame.pack_forget()
         if current == key:
             self._open_panel = None
+            self._save_last_ui_panel("")
             return
         frame = self.detail_frames.get(key)
         if frame is not None:
             frame.pack(fill="both",expand=True,padx=7,pady=(0,5),after=self.nav)
             self._open_panel = key
+            self._save_last_ui_panel(key)
 
     def open_table_banks(self):
         win = getattr(self, "_banks_window", None)
@@ -14160,6 +14302,7 @@ class App:
         self.fairness_line=tk.Label(self.root,text="",font=("Segoe UI",1),fg=self.BG,bg=self.BG)
         self.source=tk.Label(self.root,text="Kaynak: -",font=("Segoe UI",7),fg=self.MUTED,bg=self.BG)
         self.source.pack(pady=(0,4))
+        self._restore_last_ui_panel()
 
     def clear_compare_view(self):
         self.state.clear_display_comparisons()
