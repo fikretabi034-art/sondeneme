@@ -200,12 +200,14 @@ def wheel_expert(history):
     for idx, n in enumerate(hist):
         w = 1.0 / (1.0 + idx * 0.20)
         i = EU_WHEEL.index(n)
-        if idx <= 2 and freq18.get(n, 0) <= 1:
+        if idx == 0:
+            center_mult = 0.32
+        elif idx <= 2 and freq18.get(n, 0) <= 1:
             center_mult = 0.45
         else:
-            center_mult = 0.96
-        for d, mult in ((0, center_mult), (1, 0.92), (-1, 0.92),
-                        (2, 0.62), (-2, 0.62), (3, 0.30), (-3, 0.30)):
+            center_mult = 0.94
+        for d, mult in ((0, center_mult), (1, 0.94), (-1, 0.94),
+                        (2, 0.64), (-2, 0.64), (3, 0.30), (-3, 0.30)):
             m = EU_WHEEL[(i+d) % 37]
             scores[m] += mult * w
 
@@ -282,16 +284,16 @@ def transition_expert(history, session_results):
         b = seq[k + 1]
         age = (nseq - 2) - k
         rec = 1.0 / (1.0 + age / 180.0)
-        scores[b] += 2.9 + 1.5 * rec
+        scores[b] += 3.8 + 1.6 * rec
         left_n, right_n = _WHEEL_LR[b]
-        scores[left_n] += 0.16
-        scores[right_n] += 0.16
+        scores[left_n] += 0.28
+        scores[right_n] += 0.28
         if has2 and k >= 1 and seq[k - 1] == prev:
             rec2 = 1.0 / (1.0 + age / 220.0)
-            scores[b] += 5.2 + 2.0 * rec2
+            scores[b] += 1.5 + 0.7 * rec2
             if has3 and k >= 2 and seq[k - 2] == p2:
                 rec3 = 1.0 / (1.0 + age / 260.0)
-                scores[b] += 7.5 + 2.5 * rec3
+                scores[b] += 1.8 + 0.8 * rec3
 
     # Sparse fallback: what followed pockets physically close to current.
     if exact_obs < 4:
@@ -577,11 +579,14 @@ def external_web_expert(history, external_newest):
     exact_obs = len(positions)
     for i in positions:
         b = seq[i + 1]
-        scores[b] += 4.2
+        scores[b] += 4.8
+        left_n, right_n = _WHEEL_LR[b]
+        scores[left_n] += 0.26
+        scores[right_n] += 0.26
         if has2 and i >= 1 and seq[i - 1] == prev:
-            scores[b] += 7.0
+            scores[b] += 1.6
             if has3 and i >= 2 and seq[i - 2] == p2:
-                scores[b] += 9.5
+                scores[b] += 1.8
 
     # If exact current transitions are sparse, use transitions from physical
     # neighbours of the current pocket with a much smaller vote.
@@ -590,9 +595,10 @@ def external_web_expert(history, external_newest):
             for i in pos_by_num[nb]:
                 scores[seq[i + 1]] += 0.55
 
-    # Recent frequency is only a stabilizer, not a 'due' rule.
-    for idx, n in enumerate(head_120):
-        scores[n] += 0.30 / (1.0 + idx * 0.035)
+    # Recent frequency is only a stabilizer on a single table, not a 'due' rule.
+    if _tables_count <= 1:
+        for idx, n in enumerate(head_120):
+            scores[n] += 0.18 / (1.0 + idx * 0.035)
 
     out = normalize_probs(scores)
     if len(_EXT_WEB_CACHE) > 64:
@@ -714,14 +720,17 @@ def multi_table_transition_expert(history, pool_newest):
     pair_probs = snap.get("pair_probs") or {}
 
     scores = {}
+    step_unit = 1.0 / max(1, exact_obs)
     for n in range(37):
         p1 = float(exact_probs.get(n, 0.0) or 0.0)
-        p2 = float(pair_probs.get(n, 0.0) or 0.0) if pair_obs > 0 else 0.0
+        pair_cnt = float(pair_probs.get(n, 0.0) or 0.0) * pair_obs if pair_obs > 0 else 0.0
         bw = float(base_web.get(n, 1.0 / 37.0) or 0.0)
-        if pair_obs > 0:
-            scores[n] = 0.80 * p1 + 0.14 * p2 + 0.06 * bw
+        # 2-step count is scaled as a fraction (0.25) of a single 1-step observation
+        # so it cleanly breaks ties (e.g. 17x vs 17x) without ever overriding a higher 1-step count.
+        if exact_obs >= 20:
+            scores[n] = p1 + 0.25 * step_unit * pair_cnt
         else:
-            scores[n] = 0.92 * p1 + 0.08 * bw
+            scores[n] = 0.92 * (p1 + 0.25 * step_unit * pair_cnt) + 0.08 * bw
 
     return normalize_probs(scores, floor=0.0002)
 
@@ -1008,8 +1017,8 @@ def choose_live_dom_candidate(candidates, current_history):
             "overlap": 0,
         }
 
-    threshold = max(5, min(8, len(current)))
     best = None
+    max_head_skip = 2 if len(current) >= 6 else 0
 
     for nums, meta in prepared:
         variants = [("forward", nums)]
@@ -1017,42 +1026,59 @@ def choose_live_dom_candidate(candidates, current_history):
         if rev != nums:
             variants.append(("reverse", rev))
 
-        for orientation, cand in variants:
-            max_shift = min(20, max(0, len(cand) - threshold))
+        for head_skip in range(max_head_skip + 1):
+            cur_slice = current[head_skip:]
+            if len(cur_slice) < 4:
+                continue
 
-            for shift in range(max_shift + 1):
-                max_cmp = min(len(current), len(cand) - shift, 20)
-                overlap = 0
-                for i in range(max_cmp):
-                    if cand[shift + i] != current[i]:
-                        break
-                    overlap += 1
+            for orientation, cand in variants:
+                min_tail = 3 if (head_skip == 0 and len(cand) <= 12) else 4
+                max_shift = min(16, max(0, len(cand) - min_tail))
 
-                if overlap < threshold:
-                    continue
+                for shift in range(max_shift + 1):
+                    max_cmp = min(len(cur_slice), len(cand) - shift, 20)
+                    overlap = 0
+                    for i in range(max_cmp):
+                        if cand[shift + i] != cur_slice[i]:
+                            break
+                        overlap += 1
 
-                relation = "ahead" if shift > 0 else "same"
-                priority = 2 if shift > 0 else 1
+                    if head_skip > 0:
+                        req_ov = min(4, len(cur_slice))
+                    elif shift == 0:
+                        req_ov = min(5, len(cand), len(cur_slice))
+                    elif len(cand) <= 12:
+                        req_ov = 3 if (len(cand) - shift) == 3 else min(4, len(cur_slice))
+                    else:
+                        req_ov = min(5, max(4, len(cand) - shift), len(cur_slice))
 
-                score = (
-                    priority,
-                    overlap,
-                    shift if shift > 0 else 0,
-                    len(cand),
-                )
+                    if overlap < req_ov:
+                        continue
 
-                row = {
-                    "nums": cand,
-                    "meta": meta,
-                    "relation": relation,
-                    "new_count": shift,
-                    "overlap": overlap,
-                    "orientation": orientation,
-                    "_score": score,
-                }
+                    relation = "ahead" if (shift > 0 or head_skip > 0) else "same"
+                    priority = 2 if shift > 0 else 1
 
-                if best is None or row["_score"] > best["_score"]:
-                    best = row
+                    score = (
+                        -head_skip,
+                        priority,
+                        overlap,
+                        shift if shift > 0 else 0,
+                        len(cand),
+                    )
+
+                    row = {
+                        "nums": cand,
+                        "meta": meta,
+                        "relation": relation,
+                        "new_count": shift,
+                        "overlap": overlap,
+                        "head_skip": head_skip,
+                        "orientation": orientation,
+                        "_score": score,
+                    }
+
+                    if best is None or row["_score"] > best["_score"]:
+                        best = row
 
     if best is None:
         return None
@@ -1062,7 +1088,7 @@ def choose_live_dom_candidate(candidates, current_history):
 
 
 
-def align_reference_to_live(current_history, reference_history, max_new=12):
+def align_reference_to_live(current_history, reference_history, max_new=25):
     """
     Strictly align a reference history (e.g. SON500) to current live history.
 
@@ -1093,43 +1119,50 @@ def align_reference_to_live(current_history, reference_history, max_new=12):
     ]
 
     best = None
+    max_head_skip = 2 if len(current) >= 6 else 0
 
-    for orientation, cand in variants:
-        limit = min(max_new, max(0, len(cand) - 4))
+    for head_skip in range(max_head_skip + 1):
+        cur_slice = current[head_skip:]
+        if len(cur_slice) < 4:
+            continue
 
-        for shift in range(0, limit + 1):
-            overlap = min(
-                len(current),
-                len(cand) - shift,
-                20,
-            )
+        for orientation, cand in variants:
+            limit = min(max_new, max(0, len(cand) - 4))
 
-            if overlap < 4:
-                continue
+            for shift in range(0, limit + 1):
+                overlap = min(
+                    len(cur_slice),
+                    len(cand) - shift,
+                    20,
+                )
 
-            # Require exact contiguous head continuity.
-            if cand[shift:shift + overlap] != current[:overlap]:
-                continue
+                if overlap < 4:
+                    continue
 
-            # Longer exact overlap is overwhelmingly preferred.
-            # For equal overlap, prefer fewer missing new spins.
-            score = (
-                overlap,
-                -shift,
-                1 if orientation == "forward" else 0,
-            )
+                # Require exact contiguous head continuity.
+                if cand[shift:shift + overlap] != cur_slice[:overlap]:
+                    continue
 
-            row = {
-                "orientation": orientation,
-                "reference": cand,
-                "new_count": shift,
-                "new_items": cand[:shift],
-                "overlap": overlap,
-                "_score": score,
-            }
+                # Prefer zero head_skip, longer exact overlap, fewer missing spins.
+                score = (
+                    -head_skip,
+                    overlap,
+                    -shift,
+                    1 if orientation == "forward" else 0,
+                )
 
-            if best is None or row["_score"] > best["_score"]:
-                best = row
+                row = {
+                    "orientation": orientation,
+                    "reference": cand,
+                    "new_count": shift,
+                    "new_items": cand[:shift],
+                    "overlap": overlap,
+                    "head_skip": head_skip,
+                    "_score": score,
+                }
+
+                if best is None or row["_score"] > best["_score"]:
+                    best = row
 
     if best is None:
         return None
@@ -1138,7 +1171,7 @@ def align_reference_to_live(current_history, reference_history, max_new=12):
     return best
 
 
-def detect_new_front(old_history, new_history, max_new=6):
+def detect_new_front(old_history, new_history, max_new=16):
     """
     last20Results is newest-first. Detect how many new results were prepended.
     Returns newest-first new items.
@@ -1151,8 +1184,19 @@ def detect_new_front(old_history, new_history, max_new=6):
     max_k = min(max_new, len(new))
     for k in range(1, max_k + 1):
         overlap = min(len(new) - k, len(old))
-        if overlap >= 4 and new[k:k+overlap] == old[:overlap]:
+        req_ov = 3 if (len(new) <= 12 and (len(new) - k) == 3 and len(old) >= 3) else 4
+        if overlap >= req_ov and new[k:k+overlap] == old[:overlap]:
             return new[:k]
+
+    # Self-healing fallback: if 1-2 stale screen numbers were prepended to `old`
+    # earlier, still detect continuity against `old[head_skip:]` when >=4 numbers match.
+    max_skip = 2 if len(old) >= 6 else 0
+    for head_skip in range(1, max_skip + 1):
+        old_slice = old[head_skip:]
+        for k in range(1, max_k + 1):
+            overlap = min(len(new) - k, len(old_slice))
+            if overlap >= 4 and new[k:k+overlap] == old_slice[:overlap]:
+                return new[:k]
     return []
 
 
@@ -2057,16 +2101,16 @@ def walk_forward_profile(long_newest, max_trials=220, min_train=120):
             b = seq[k + 1]
             age = (t - 2) - k
             rec = 1.0 / (1.0 + age / 180.0)
-            t_scores[b] += 2.9 + 1.5 * rec
+            t_scores[b] += 3.8 + 1.6 * rec
             ln, rn = _WHEEL_LR[b]
-            t_scores[ln] += 0.16
-            t_scores[rn] += 0.16
+            t_scores[ln] += 0.28
+            t_scores[rn] += 0.28
             if has2 and k >= 1 and seq[k - 1] == prev:
                 rec2 = 1.0 / (1.0 + age / 220.0)
-                t_scores[b] += 5.2 + 2.0 * rec2
+                t_scores[b] += 1.5 + 0.7 * rec2
                 if has3 and k >= 2 and seq[k - 2] == p2:
                     rec3 = 1.0 / (1.0 + age / 260.0)
-                    t_scores[b] += 7.5 + 2.5 * rec3
+                    t_scores[b] += 1.8 + 0.8 * rec3
         if exact_obs_t < 4:
             for nb in set(wheel_neighbors(current, 2)):
                 for k in pos_by_num[nb]:
@@ -2086,12 +2130,15 @@ def walk_forward_profile(long_newest, max_trials=220, min_train=120):
             if k < w_min:
                 continue
             b = seq[k + 1]
-            w_scores[b] += 4.2
+            w_scores[b] += 4.8
+            ln, rn = _WHEEL_LR[b]
+            w_scores[ln] += 0.26
+            w_scores[rn] += 0.26
             exact_obs_w += 1
             if has2 and k >= w_min + 1 and seq[k - 1] == prev:
-                w_scores[b] += 7.0
+                w_scores[b] += 1.6
                 if has3 and k >= w_min + 2 and seq[k - 2] == p2:
-                    w_scores[b] += 9.5
+                    w_scores[b] += 1.8
         if exact_obs_w < 3:
             for nb in set(wheel_neighbors(current, 2)):
                 for k in pos_by_num[nb]:
@@ -2387,11 +2434,11 @@ def source_predictions(history, session_results, table500, table_long, archive, 
 def adaptive_source_weights(source_hits, active_sources):
     """Performance-weighted CANLI / SON500 / ARŞİV / WEB allocation."""
     priors = {
-        "LOCAL": 0.27,
-        "TABLE500": 0.23,
-        "TABLE_LONG": 0.23,
-        "ARCHIVE": 0.17,
-        "WEB": 0.10,
+        "ARCHIVE": 0.28,
+        "TABLE500": 0.25,
+        "TABLE_LONG": 0.24,
+        "LOCAL": 0.15,
+        "WEB": 0.08,
     }
     top5_base = 5.0 / 37.0
     exact_base = 1.0 / 37.0
@@ -2521,6 +2568,7 @@ def source_consensus(
         details[name] = {
             "top1": top5[0],
             "top5": top5,
+            "dist": dict(d),
             "weight": w,
             "top5_rate": perf.get(name, {}).get("top5_rate", 0.0),
             "exact_rate": perf.get(name, {}).get("exact_rate", 0.0),
@@ -2911,11 +2959,13 @@ def exact_window_profiles(validation_history, source_hits=None, expert_hits=None
     return out
 
 
-def _member_rank_scores(top5):
-    # Exact number dominates for NET, while positions 2-5 retain enough signal
-    # so strong families (ORTAK, TABLO, TRANSITION) populate YEDEK-4 accurately.
-    bonus = (1.00, 0.28, 0.17, 0.10, 0.06)
+def _member_rank_scores(top5, dist=None):
+    # Preserve strong #2-#5 transition candidates (e.g. tied 17x or close 16x/15x
+    # numbers in ORTAK HAVUZ / TABLO) by blending smooth rank weights with actual
+    # probability lift above baseline 1/37.
+    bonus = (1.00, 0.76, 0.58, 0.44, 0.32)
     out = {n: 0.0 for n in range(37)}
+    clean_top5 = []
     for pos, raw in enumerate((top5 or [])[:5]):
         try:
             n = int(raw)
@@ -2923,6 +2973,28 @@ def _member_rank_scores(top5):
             continue
         if 0 <= n <= 36:
             out[n] += bonus[pos]
+            clean_top5.append((pos, n))
+
+    if isinstance(dist, dict) and dist:
+        base_p = 1.0 / 37.0
+        peak_p = max((float(dist.get(n, 0.0) or 0.0) for n in range(37)), default=0.0)
+        span = peak_p - base_p
+        if span > 1e-6:
+            for pos, n in clean_top5:
+                p_n = float(dist.get(n, 0.0) or 0.0)
+                lift = max(0.0, min(1.0, (p_n - base_p) / span))
+                out[n] = 0.52 * bonus[pos] + 0.48 * lift
+            ordered_d = sorted(
+                range(37),
+                key=lambda k: (-float(dist.get(k, 0.0) or 0.0), k),
+            )
+            top5_set = {n for _pos, n in clean_top5}
+            for extra_n in ordered_d[5:8]:
+                if extra_n not in top5_set:
+                    p_n = float(dist.get(extra_n, 0.0) or 0.0)
+                    lift = max(0.0, min(1.0, (p_n - base_p) / span))
+                    if lift > 0.0:
+                        out[extra_n] = 0.24 * lift
     return out
 
 
@@ -3014,10 +3086,11 @@ def choose_net_number(
             int(x) for x in (sd.get("top5") or [])
             if isinstance(x, int) and 0 <= int(x) <= 36
         ][:5]
+        s_dist = sd.get("dist") if isinstance(sd.get("dist"), dict) else None
         if top5:
             members[key] = {
                 "top1": top5[0],
-                "dist": _member_rank_scores(top5),
+                "dist": _member_rank_scores(top5, s_dist),
                 "skill": _blended_member_skill(key),
             }
 
@@ -3034,16 +3107,24 @@ def choose_net_number(
             top5 = [int(n) for n,_p in ordered[:5]]
             members[key] = {
                 "top1": top5[0],
-                "dist": _member_rank_scores(top5),
+                "dist": _member_rank_scores(top5, dist),
                 "skill": _blended_member_skill(key),
             }
 
-    families = {
-        "ORTAK": ("ARCHIVE","MODEL_WEB"),
-        "TABLO": ("TABLE500","TABLE_LONG"),
-        "AKIŞ": ("LOCAL","MODEL_RECENCY","MODEL_TRANSITION"),
-        "ÇARK": ("MODEL_WHEEL",),
-    }
+    if "ARCHIVE" in members:
+        families = {
+            "ORTAK": ("ARCHIVE",),
+            "TABLO": ("TABLE500","TABLE_LONG","MODEL_WEB"),
+            "AKIŞ": ("LOCAL","MODEL_RECENCY","MODEL_TRANSITION"),
+            "ÇARK": ("MODEL_WHEEL",),
+        }
+    else:
+        families = {
+            "ORTAK": ("ARCHIVE","MODEL_WEB"),
+            "TABLO": ("TABLE500","TABLE_LONG"),
+            "AKIŞ": ("LOCAL","MODEL_RECENCY","MODEL_TRANSITION"),
+            "ÇARK": ("MODEL_WHEEL",),
+        }
 
     family_dists = {}
     family_picks = {}
@@ -3114,7 +3195,7 @@ def choose_net_number(
 
     # Modest exact-skill adaptation, plus balanced multi-table & table-archive maturity.
     raw_fw = {
-        fam:min(1.30, max(0.75, family_strength[fam]))
+        fam:min(1.42, max(0.48, family_strength[fam]))
         for fam in family_dists
     }
     live_n100 = max(
@@ -3123,27 +3204,28 @@ def choose_net_number(
     )
     maturity_gap = max(0.0, (35.0 - min(35.0, float(live_n100))) / 35.0)
     if "TABLO" in raw_fw and table_long_count >= 100:
-        tablo_boost = 1.0 + 0.08 * min(1.0, table_long_count / 500.0) + 0.10 * maturity_gap
-        raw_fw["TABLO"] = min(1.38, raw_fw["TABLO"] * tablo_boost)
+        tablo_boost = 1.0 + 0.09 * min(1.0, table_long_count / 500.0) + 0.10 * maturity_gap
+        raw_fw["TABLO"] = min(1.46, raw_fw["TABLO"] * tablo_boost)
     if "ORTAK" in raw_fw and mt_exact_obs >= 5:
         pool_boost = (
             1.0
-            + 0.07 * min(1.0, mt_spins / 5000.0)
-            + 0.05 * min(1.0, max(0, mt_tables - 1) / 10.0)
+            + 0.08 * min(1.0, mt_spins / 5000.0)
+            + 0.06 * min(1.0, max(0, mt_tables - 1) / 10.0)
+            + 0.06 * min(1.0, mt_exact_obs / 150.0)
             + 0.08 * maturity_gap
         )
-        raw_fw["ORTAK"] = min(1.38, raw_fw["ORTAK"] * pool_boost)
+        raw_fw["ORTAK"] = min(1.48, raw_fw["ORTAK"] * pool_boost)
     if maturity_gap > 0.0:
         if "AKIŞ" in raw_fw:
-            raw_fw["AKIŞ"] = max(0.70, raw_fw["AKIŞ"] * (1.0 - 0.10 * maturity_gap))
+            raw_fw["AKIŞ"] = max(0.48, raw_fw["AKIŞ"] * (1.0 - 0.10 * maturity_gap))
         if "ÇARK" in raw_fw:
-            raw_fw["ÇARK"] = max(0.68, raw_fw["ÇARK"] * (1.0 - 0.12 * maturity_gap))
+            raw_fw["ÇARK"] = max(0.45, raw_fw["ÇARK"] * (1.0 - 0.14 * maturity_gap))
 
     s = sum(raw_fw.values()) or 1.0
     fw = {fam:w/s for fam,w in raw_fw.items()}
 
     if len(fw) >= 2:
-        fw = {fam:min(0.45,w) for fam,w in fw.items()}
+        fw = {fam:min(0.48,w) for fam,w in fw.items()}
         s2 = sum(fw.values()) or 1.0
         fw = {fam:w/s2 for fam,w in fw.items()}
 
@@ -3153,7 +3235,7 @@ def choose_net_number(
         for n in range(37):
             val = float(dist.get(n,0.0))
             total[n] += fw[fam] * val
-            if val > 1e-6:
+            if val >= 0.35:
                 fam_presence[n] += 1
 
     combined = pred.get("combined") or {}
@@ -3161,12 +3243,13 @@ def choose_net_number(
     max_mt_prob = max((float(v or 0.0) for v in mt_exact_probs.values()), default=0.0)
     ortak_dist = family_dists.get("ORTAK") or {}
     tablo_dist = family_dists.get("TABLO") or {}
+    mt_w = 0.10 + 0.12 * min(1.0, mt_exact_obs / 120.0) if mt_exact_obs >= 5 else 0.0
 
     for n in range(37):
         if max_comb > 1e-9:
-            total[n] += 0.14 * (float(combined.get(n, 0.0) or 0.0) / max_comb)
-        if mt_exact_obs >= 5 and max_mt_prob > 1e-9:
-            total[n] += 0.10 * (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob)
+            total[n] += 0.15 * (float(combined.get(n, 0.0) or 0.0) / max_comb)
+        if mt_w > 0.0 and max_mt_prob > 1e-9:
+            total[n] += mt_w * (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob)
         if fam_presence[n] >= 2:
             total[n] += 0.07 * (fam_presence[n] - 1)
         # Cross-family wheel-neighbor synergy (K1/K2 pocket alignment between ORTAK and TABLO)
@@ -3227,19 +3310,24 @@ def choose_net_number(
     )
 
     chosen = int(ordered[0])
+    leader_total = max(1e-9, float(total[chosen]))
     # Select the 4 backups (YEDEK-4) by combining total score, walk-forward/pool
-    # combined probability, and non-overlapping wheel-pocket coverage so K1/K2
-    # and YEDEK-4 do not waste slots on weak or redundant pockets.
+    # combined probability, and uncovered K1 wheel-pocket probability mass so
+    # strong ORTAK/TABLO transitions populate YEDEK-4 and K1/K2 packages.
     top5 = [chosen]
     covered_k1 = set(wheel_neighbors(chosen, 1))
     remaining = [int(n) for n in ordered[1:]]
     while len(top5) < 5 and remaining:
         def _backup_key(n):
             nb1_set = set(wheel_neighbors(n, 1))
-            new_pockets = len(nb1_set - covered_k1)
+            uncovered = nb1_set - covered_k1
             comb_bonus = (float(combined.get(n, 0.0) or 0.0) / max_comb) * 0.12 if max_comb > 1e-9 else 0.0
-            # Each newly covered K1 pocket (0..3) adds a small diversity bonus
-            cov_bonus = 0.028 * new_pockets
+            rel_strength = min(1.0, float(total[n]) / max(1e-9, leader_total * 0.55))
+            if max_comb > 1e-9 and uncovered:
+                uncovered_mass = sum(float(combined.get(m, 0.0) or 0.0) / max_comb for m in uncovered)
+                cov_bonus = 0.022 * rel_strength * uncovered_mass
+            else:
+                cov_bonus = 0.015 * rel_strength * len(uncovered)
             return (total[n] + comb_bonus + cov_bonus, float(combined.get(n, 0.0) or 0.0), -n)
 
         best_b = max(remaining, key=_backup_key)
@@ -5678,18 +5766,20 @@ class RouletteState:
                 align_reference_to_live(
                     current,
                     clean,
-                    max_new=12,
+                    max_new=25,
                 )
                 if current
                 else None
             )
             verified_live_new = []
+            live_head_skip = 0
 
             if live_alignment:
                 clean = list(live_alignment["reference"])
                 verified_live_new = list(
                     live_alignment.get("new_items", [])
                 )
+                live_head_skip = int(live_alignment.get("head_skip", 0) or 0)
             else:
                 ref_win = self.table_long_history[:500] if self.table_long_history else previous_500
                 clean = self._normalize_background_window(clean, ref_win)
@@ -5795,11 +5885,18 @@ class RouletteState:
                 self._try_load_learning(self.table_name, self.history)
                 self._refresh_imported_history(force=True)
 
-            if self.history and verified_live_new:
+            if self.history and (verified_live_new or live_head_skip > 0):
                 # Safe catch-up:
                 # SON500 is NOT replacing history. It only proved that these
                 # exact new numbers were prepended to the current live head.
-                temp_hist = list(self.history)
+                base_hist = (
+                    list(self.history[live_head_skip:])
+                    if live_head_skip > 0 and len(self.history) > live_head_skip
+                    else list(self.history)
+                )
+                if live_head_skip > 0:
+                    self.pending_prediction = self._make_prediction(base_hist)
+                temp_hist = list(base_hist)
 
                 for actual in reversed(verified_live_new):
                     self._safe_score_pending(int(actual))
@@ -5809,7 +5906,7 @@ class RouletteState:
 
                 self.history = (
                     [int(x) for x in verified_live_new]
-                    + list(self.history)
+                    + base_hist
                 )[:20]
 
                 self.source = (
@@ -6877,11 +6974,25 @@ class RouletteState:
                     self._set_table_paths(self.table_name)
                     self._try_load_learning(self.table_name, self.history)
                 else:
-                    new_items = detect_new_front(self.history, clean[:20], max_new=12)
+                    new_items = detect_new_front(self.history, clean[:20], max_new=16)
 
                     if new_items:
+                        base_hist = list(self.history)
+                        k_new = len(new_items)
+                        if k_new > 0 and len(clean) > k_new:
+                            for hs in (0, 1, 2):
+                                if len(self.history) <= hs:
+                                    continue
+                                hs_slice = self.history[hs:]
+                                ov = min(len(clean) - k_new, len(hs_slice))
+                                if ov >= 3 and clean[k_new:k_new + ov] == hs_slice[:ov]:
+                                    base_hist = list(hs_slice)
+                                    if hs > 0:
+                                        self.pending_prediction = self._make_prediction(base_hist)
+                                    break
+
                         # new_items are newest-first; replay chronologically.
-                        temp_hist = list(self.history)
+                        temp_hist = list(base_hist)
                         for actual in reversed(new_items):
                             self._safe_score_pending(actual)
                             self.session_results.append(int(actual))
@@ -6889,22 +7000,30 @@ class RouletteState:
                             temp_hist = [int(actual)] + temp_hist[:19]
                             self.pending_prediction = self._make_prediction(temp_hist)
 
-                        self.history = clean[:20]
+                        if len(clean) >= 20:
+                            self.history = clean[:20]
+                        else:
+                            self.history = ([int(x) for x in new_items] + base_hist)[:20]
                         # Recalculate once with the exact received last20.
                         self.pending_prediction = self._make_prediction(self.history)
                         self._save_learning()
-                    elif clean[:20] == self.history:
+                    elif clean[:20] == self.history[:len(clean[:20])]:
                         pass
                     else:
-                        # V2.8.0 LIVE LOCK:
-                        # A source that cannot prove newest-first continuity
-                        # is NOT allowed to mutate the visible live history.
-                        # This prevents stale DOM widgets, mis-oriented SON500,
-                        # or unrelated result grids from changing SON SAYI/SON20.
-                        #
-                        # The data source may still be used elsewhere for
-                        # archive/model analysis, but live history stays intact.
-                        return
+                        # Self-heal if clean matches self.history[1:] or self.history[2:] with 0 new items
+                        healed = False
+                        for hs in (1, 2):
+                            if len(self.history) > hs + 4:
+                                hs_slice = self.history[hs:]
+                                ov = min(len(clean), len(hs_slice), 20)
+                                if ov >= 5 and clean[:ov] == hs_slice[:ov]:
+                                    self.history = list(hs_slice[:20])
+                                    self.pending_prediction = self._make_prediction(self.history)
+                                    self._save_learning()
+                                    healed = True
+                                    break
+                        if not healed:
+                            return
 
             if hot:
                 self.hot = [
@@ -10516,52 +10635,13 @@ class ChromeBridge(threading.Thread):
             self.request_auto_restart(reason)
 
     def _handle_live_result_candidates(self, sid, candidates):
-        rows = [row for row in (candidates or []) if isinstance(row, dict)]
-        if not sid or not rows:
-            self.live_result_probe.pop(sid, None)
-            return False
-        rows.sort(key=lambda row: float(row.get("score", 0.0) or 0.0), reverse=True)
-        best = rows[0]
-        try:
-            number = int(best.get("n"))
-            score = float(best.get("score", 0.0) or 0.0)
-        except Exception:
-            return False
-        if not 0 <= number <= 36 or score < 70.0:
-            return False
-        if len(rows) > 1:
-            try:
-                second_n = int(rows[1].get("n"))
-                second_score = float(rows[1].get("score", 0.0) or 0.0)
-                if second_n != number and second_score >= score - 5.0:
-                    self.live_result_probe.pop(sid, None)
-                    return False
-            except Exception:
-                pass
-
-        with self.state.lock:
-            current = int(self.state.history[0]) if self.state.history else None
-        if current is None or current == number:
-            self.live_result_probe.pop(sid, None)
-            return False
-
-        now = time.time()
-        old = self.live_result_probe.get(sid, {}) or {}
-        if int(old.get("number", -1)) == number and now - float(old.get("last", 0.0) or 0.0) <= 1.5:
-            count = int(old.get("count", 0) or 0) + 1
-        else:
-            count = 1
-        self.live_result_probe[sid] = {"number": number, "count": count, "last": now}
-        if count < 3:
-            return False
-
-        applied = self.state.update_live_result(
-            number,
-            source="CANLI SONUÇ EKRANI • 3x doğrulandı",
-        )
-        if applied:
-            self.live_result_probe.pop(sid, None)
-        return applied
+        # Disabled standalone single-number injection: a single prominent number on
+        # screen (e.g. a 20 chip, timer, or wheel graphic) has no sequence context
+        # and can prepend a false spin that desynchronizes SON20 continuity.
+        # Only sequence-verified sources (DOM history bar, Pragmatic API, DGA, SON500)
+        # are allowed to advance self.state.history.
+        self.live_result_probe.pop(sid, None)
+        return False
 
     def _handle_table_nav_scan(self, scan_context, value):
         meta = scan_context if isinstance(scan_context, dict) else {
@@ -10947,7 +11027,7 @@ class ChromeBridge(threading.Thread):
             return False
         act = self.session_table_activity.get(sid, {}) or {}
         last = float(act.get("last", 0.0) or 0.0)
-        return bool(last and time.time() - last <= 8.0)
+        return bool(last and time.time() - last <= 45.0)
 
     def is_lobby_nav_target(self, sid):
         info = self.session_info.get(sid, {}) or {}
@@ -11149,7 +11229,7 @@ class ChromeBridge(threading.Thread):
             if self._is_collector_session(sid):
                 continue
             age = now - float(act.get("last", 0.0) or 0.0)
-            if age > 8.0:
+            if age > 45.0:
                 continue
 
             vis = self.session_visibility.get(sid, {})
@@ -11357,32 +11437,63 @@ class ChromeBridge(threading.Thread):
                                 context=sid,
                             )
 
-                    if self.is_roulette_target(sid) and self._is_active_session(sid):
-                        self.send(
-                            "Runtime.evaluate",
-                            {
+                    is_active_roulette = (
+                        self._is_active_session(sid)
+                        and (
+                            self.is_roulette_target(sid)
+                            or self.is_recovery_target(sid)
+                            or sid == self.active_game_sid
+                            or sid in self.session_table_activity
+                        )
+                    )
+                    if is_active_roulette:
+                        active_ctx_ids = [None]
+                        for ctx in (self.execution_contexts.get(sid) or {}).values():
+                            cid = ctx.get("id")
+                            aux = ctx.get("auxData") or {}
+                            origin = str(ctx.get("origin") or "").lower()
+                            if cid is None or not bool(aux.get("isDefault", False)):
+                                continue
+                            if not origin.startswith(("http://", "https://")):
+                                continue
+                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
+                                continue
+                            active_ctx_ids.append(int(cid))
+                        active_ctx_ids = list(dict.fromkeys(active_ctx_ids))[:5]
+
+                        for ctx_id in active_ctx_ids:
+                            dom_params = {
                                 "expression": DOM_SCAN,
                                 "returnByValue": True,
                                 "awaitPromise": True,
-                            },
-                            session_id=sid,
-                            kind="domscan",
-                            context=sid,
-                        )
-
-                        if now - float(last_500_scan.get(sid, 0.0)) >= 8.0:
-                            last_500_scan[sid] = now
+                            }
+                            if ctx_id is not None:
+                                dom_params["contextId"] = int(ctx_id)
                             self.send(
                                 "Runtime.evaluate",
-                                {
+                                dom_params,
+                                session_id=sid,
+                                kind="domscan",
+                                context=sid,
+                            )
+
+                        if now - float(last_500_scan.get(sid, 0.0)) >= 4.5:
+                            last_500_scan[sid] = now
+                            for ctx_id in active_ctx_ids:
+                                h500_params = {
                                     "expression": HISTORY500_SCAN,
                                     "returnByValue": True,
                                     "awaitPromise": True,
-                                },
-                                session_id=sid,
-                                kind="history500",
-                                context=sid,
-                            )
+                                }
+                                if ctx_id is not None:
+                                    h500_params["contextId"] = int(ctx_id)
+                                self.send(
+                                    "Runtime.evaluate",
+                                    h500_params,
+                                    session_id=sid,
+                                    kind="history500",
+                                    context=sid,
+                                )
 
                     # Background bank collection: old/hidden tables are allowed
                     # to feed THEIR OWN tableId archive only. They cannot affect
@@ -11416,25 +11527,38 @@ class ChromeBridge(threading.Thread):
                         )
 
                     if self.is_direct_probe_target(sid) and self._is_active_session(sid):
-                        contexts = list(
-                            (self.execution_contexts.get(sid) or {}).values()
-                        )
-                        if not contexts:
-                            key = (sid, "default")
-                            if now - float(last_direct_scan.get(key, 0.0)) >= 10.0:
+                        direct_ctx_ids = [None]
+                        for ctx in (self.execution_contexts.get(sid) or {}).values():
+                            cid = ctx.get("id")
+                            aux = ctx.get("auxData") or {}
+                            origin = str(ctx.get("origin") or "").lower()
+                            if cid is None or not bool(aux.get("isDefault", False)):
+                                continue
+                            if not origin.startswith(("http://", "https://")):
+                                continue
+                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
+                                continue
+                            direct_ctx_ids.append(int(cid))
+                        direct_ctx_ids = list(dict.fromkeys(direct_ctx_ids))[:5]
+                        for ctx_id in direct_ctx_ids:
+                            key = (sid, ctx_id if ctx_id is not None else "default")
+                            if now - float(last_direct_scan.get(key, 0.0)) >= 5.0:
                                 last_direct_scan[key] = now
+                                d_params = {
+                                    "expression": DIRECT_HISTORY_SCAN,
+                                    "returnByValue": True,
+                                    "awaitPromise": True,
+                                }
+                                if ctx_id is not None:
+                                    d_params["contextId"] = int(ctx_id)
                                 self.send(
                                     "Runtime.evaluate",
-                                    {
-                                        "expression": DIRECT_HISTORY_SCAN,
-                                        "returnByValue": True,
-                                        "awaitPromise": True,
-                                    },
+                                    d_params,
                                     session_id=sid,
                                     kind="directhistory",
                                     context={
                                         "session": sid,
-                                        "context_id": None,
+                                        "context_id": ctx_id,
                                         "origin": "",
                                         "name": "default",
                                     },
@@ -12683,6 +12807,8 @@ class ChromeBridge(threading.Thread):
                         )
 
                         if chosen and len(chosen.get("nums",[])) >= 5:
+                            if sid_ctx and sid_ctx in self.session_table_activity:
+                                self.session_table_activity[sid_ctx]["last"] = time.time()
                             relation = str(chosen.get("relation",""))
                             new_count = int(chosen.get("new_count",0) or 0)
 
@@ -12896,6 +13022,8 @@ class ChromeBridge(threading.Thread):
                         nums = value.get("nums",[])
                         title = value.get("title","")
                         if len(nums) >= 20:
+                            if sid_ctx and sid_ctx in self.session_table_activity:
+                                self.session_table_activity[sid_ctx]["last"] = time.time()
                             self.state.update_table_history_500(
                                 nums,
                                 table_name=title
@@ -15970,6 +16098,13 @@ def self_test():
     # Lobby exit guard assertions:
     assert "lobbyLike: true" in DOM_SCAN
     assert "earlyLobbyLike" in HISTORY500_SCAN
+
+    # Narrow 10-number DOM bar catch-up + stale head self-healing assertions:
+    frozen_cur = [20, 31, 14, 15, 18, 20, 2, 11, 32, 16, 14, 19, 10, 17, 6, 35, 34, 12, 27, 4]
+    narrow_bar_10 = [9, 29, 13, 13, 11, 16, 31, 14, 15, 18]
+    dom_cand = choose_live_dom_candidate([{"nums": narrow_bar_10, "cls": "recent-results"}], frozen_cur)
+    assert dom_cand is not None and dom_cand["new_count"] == 6 and dom_cand["head_skip"] == 1
+    assert detect_new_front(frozen_cur, narrow_bar_10, max_new=16) == [9, 29, 13, 13, 11, 16]
 
     return True
 
