@@ -2912,8 +2912,9 @@ def exact_window_profiles(validation_history, source_hits=None, expert_hits=None
 
 
 def _member_rank_scores(top5):
-    # Exact number dominates. Positions 2-5 are weak tie/support evidence only.
-    bonus = (1.00, 0.16, 0.09, 0.05, 0.03)
+    # Exact number dominates for NET, while positions 2-5 retain enough signal
+    # so strong families (ORTAK, TABLO, TRANSITION) populate YEDEK-4 accurately.
+    bonus = (1.00, 0.28, 0.17, 0.10, 0.06)
     out = {n: 0.0 for n in range(37)}
     for pos, raw in enumerate((top5 or [])[:5]):
         try:
@@ -2922,6 +2923,42 @@ def _member_rank_scores(top5):
             continue
         if 0 <= n <= 36:
             out[n] += bonus[pos]
+    return out
+
+
+def _wf_member_skill_map(walkforward):
+    wf = walkforward or {}
+    wf_experts = wf.get("experts") or {}
+    if not wf_experts:
+        return {}
+    top5_base = 5.0 / 37.0
+    exact_base = 1.0 / 37.0
+    exp_skills = {}
+    for exp_name in ("RECENCY", "WHEEL", "TRANSITION", "LONG"):
+        st = wf_experts.get(exp_name) or {}
+        tn = int(st.get("trials", 0) or 0)
+        if tn < 40:
+            continue
+        t5 = int(st.get("top5", 0) or 0)
+        ex = int(st.get("exact", 0) or 0)
+        t5_sm = (t5 + top5_base * 35.0) / (tn + 35.0)
+        ex_sm = (ex + exact_base * 65.0) / (tn + 65.0)
+        sk = 0.80 * (t5_sm / top5_base) + 0.20 * (ex_sm / exact_base)
+        if tn >= 80 and (t5 / tn) < top5_base * 0.88:
+            sk *= 0.72
+        exp_skills[exp_name] = min(1.55, max(0.52, sk))
+    out = {}
+    if "RECENCY" in exp_skills:
+        out["MODEL_RECENCY"] = exp_skills["RECENCY"]
+    if "WHEEL" in exp_skills:
+        out["MODEL_WHEEL"] = exp_skills["WHEEL"]
+    if "TRANSITION" in exp_skills:
+        out["MODEL_TRANSITION"] = exp_skills["TRANSITION"]
+        out["LOCAL"] = exp_skills["TRANSITION"]
+    if "LONG" in exp_skills:
+        out["MODEL_WEB"] = exp_skills["LONG"]
+        out["TABLE500"] = exp_skills["LONG"]
+        out["TABLE_LONG"] = exp_skills["LONG"]
     return out
 
 
@@ -2955,7 +2992,20 @@ def choose_net_number(
     sc = pred.get("source_consensus") or {}
     raw_sources = sc.get("sources") or {}
     experts = pred.get("experts") or {}
+    wf_skills = _wf_member_skill_map(pred.get("walkforward"))
     members = {}
+
+    def _blended_member_skill(key):
+        pr = profiles.get(key) or {}
+        live_sk = float(pr.get("effective_skill", pr.get("skill", 1.0)))
+        n100 = int(pr.get("n100", 0) or 0)
+        wf_sk = wf_skills.get(key)
+        if wf_sk is None:
+            return live_sk
+        # When live rounds on this table are still few (<80), let the 220-round
+        # same-table walk-forward evaluation guide member skill immediately.
+        wf_w = 0.58 * (1.0 - min(1.0, n100 / 85.0)) + 0.18
+        return min(1.55, max(0.52, (1.0 - wf_w) * live_sk + wf_w * float(wf_sk)))
 
     for key in ("LOCAL","TABLE500","TABLE_LONG","ARCHIVE"):
         sd = raw_sources.get(key) or {}
@@ -2967,7 +3017,7 @@ def choose_net_number(
             members[key] = {
                 "top1": top5[0],
                 "dist": _member_rank_scores(top5),
-                "skill": float(profiles.get(key,{}).get("effective_skill", profiles.get(key,{}).get("skill",1.0))),
+                "skill": _blended_member_skill(key),
             }
 
     exp_keys = {
@@ -2984,7 +3034,7 @@ def choose_net_number(
             members[key] = {
                 "top1": top5[0],
                 "dist": _member_rank_scores(top5),
-                "skill": float(profiles.get(key,{}).get("effective_skill", profiles.get(key,{}).get("skill",1.0))),
+                "skill": _blended_member_skill(key),
             }
 
     families = {
@@ -3176,7 +3226,25 @@ def choose_net_number(
     )
 
     chosen = int(ordered[0])
-    top5 = [int(n) for n in ordered[:5]]
+    # Select the 4 backups (YEDEK-4) by combining total score, walk-forward/pool
+    # combined probability, and non-overlapping wheel-pocket coverage so K1/K2
+    # and YEDEK-4 do not waste slots on weak or redundant pockets.
+    top5 = [chosen]
+    covered_k1 = set(wheel_neighbors(chosen, 1))
+    remaining = [int(n) for n in ordered[1:]]
+    while len(top5) < 5 and remaining:
+        def _backup_key(n):
+            nb1_set = set(wheel_neighbors(n, 1))
+            new_pockets = len(nb1_set - covered_k1)
+            comb_bonus = (float(combined.get(n, 0.0) or 0.0) / max_comb) * 0.12 if max_comb > 1e-9 else 0.0
+            # Each newly covered K1 pocket (0..3) adds a small diversity bonus
+            cov_bonus = 0.028 * new_pockets
+            return (total[n] + comb_bonus + cov_bonus, float(combined.get(n, 0.0) or 0.0), -n)
+
+        best_b = max(remaining, key=_backup_key)
+        top5.append(int(best_b))
+        covered_k1.update(wheel_neighbors(best_b, 1))
+        remaining.remove(best_b)
 
     family_supporters = [
         fam for fam,pick in family_picks.items()
@@ -14825,9 +14893,17 @@ class App:
             self.model_share.config(text=f"MODEL PAYI: %{share:.2f}")
 
             quality = s.get("prediction_quality","ZAYIF")
+            wf_info = s.get("walkforward") or {}
+            if wf_info.get("qualified"):
+                wf_edge_val = float(wf_info.get("edge_pp", 0.0) or 0.0)
+                wf_label = f"GÜÇLÜ (+{wf_edge_val:.1f}p EDGE)"
+            elif float(wf_info.get("edge_pp", -1.0) or -1.0) >= 0.0 and int(wf_info.get("trials", 0) or 0) >= 40:
+                wf_label = "ORTA"
+            else:
+                wf_label = quality
             stage = s.get("learning_stage","TEMKİNLİ ÖĞRENME")
             self.quality_line.config(
-                text=f"VERİ MODU: KAYNAKLAR KAYDEDİLİYOR • WF {quality}",
+                text=f"VERİ MODU: KAYNAKLAR KAYDEDİLİYOR • WF {wf_label}",
                 fg=self.GREEN,
             )
             cov = s.get("coverage") or {}
