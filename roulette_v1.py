@@ -2956,7 +2956,8 @@ def _wf_member_skill_map(walkforward):
         out["MODEL_TRANSITION"] = exp_skills["TRANSITION"]
         out["LOCAL"] = exp_skills["TRANSITION"]
     if "LONG" in exp_skills:
-        out["MODEL_WEB"] = exp_skills["LONG"]
+        out["ARCHIVE"] = max(1.15, exp_skills["LONG"])
+        out["MODEL_WEB"] = min(1.25, exp_skills["LONG"])
         out["TABLE500"] = exp_skills["LONG"]
         out["TABLE_LONG"] = exp_skills["LONG"]
     return out
