@@ -105,8 +105,13 @@ if not defined CHROME (
 
 :START_ALL
 set "LASTURL="
-
-for /f "usebackq delims=" %%U in (`"%PYTHON_EXE%" %PYTHON_ARGS% "%~dp0resolve_last_roulette.py"`) do if not "%%U"=="" set "LASTURL=%%U"
+set "TMP_URL_FILE=%TEMP%\roulette_last_url.txt"
+del /f /q "%TMP_URL_FILE%" >nul 2>nul
+"%PYTHON_EXE%" %PYTHON_ARGS% "%~dp0resolve_last_roulette.py" > "%TMP_URL_FILE%" 2>nul
+if exist "%TMP_URL_FILE%" (
+    set /p LASTURL=<"%TMP_URL_FILE%"
+    del /f /q "%TMP_URL_FILE%" >nul 2>nul
+)
 
 if defined LASTURL (
     echo [AUTO] Canli casino girisi aciliyor...

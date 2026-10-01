@@ -11001,34 +11001,11 @@ class ChromeBridge(threading.Thread):
         return True
 
     def _handle_recovery_scan(self, sid, value):
-        if not isinstance(value, dict):
-            self.recovery_hits[sid] = 0
-            return
-        hit = bool(value.get("hit"))
-        now = time.time()
-        if not hit:
-            self.recovery_hits[sid] = 0
-            return
-
-        last = float(self.recovery_last_hit.get(sid, 0.0) or 0.0)
-        count = int(self.recovery_hits.get(sid, 0) or 0)
-        count = count + 1 if now - last <= 4.0 else 1
-        self.recovery_hits[sid] = count
-        self.recovery_last_hit[sid] = now
-
-        # Two consecutive confirmations suppress transient text/button matches.
-        if count >= 2:
-            details = []
-            phrases = value.get("phrases") or []
-            buttons = value.get("buttons") or []
-            if phrases:
-                details.append(str(phrases[0]))
-            elif buttons:
-                details.append(str(buttons[0]))
-            reason = "Pragmatic sayfa yenileme uyarısı"
-            if details:
-                reason += f" ({details[0]})"
-            self.request_auto_restart(reason)
+        # Never exit with code 77 or kill the user's Chrome session from DOM
+        # text matches (words like "yenile" + "bağlantı"/"oturum" appear on
+        # normal casino pages and would close Chrome unexpectedly).
+        self.recovery_hits[sid] = 0
+        return
 
     def _handle_live_result_candidates(self, sid, candidates):
         # Disabled standalone single-number injection: a single prominent number on
@@ -11400,7 +11377,7 @@ class ChromeBridge(threading.Thread):
                     cur_url = str(info.get("url", "") or "").strip().lower()
                     if (
                         str(info.get("type", "") or "").lower() == "page"
-                        and (not cur_url or cur_url in ("about:blank", "chrome://newtab/", "chrome://newtab"))
+                        and not cur_url.startswith(("http://", "https://", "devtools://", "chrome-extension://"))
                     ):
                         saved_url = self._saved_lobby_url()
                         if saved_url:
@@ -13542,8 +13519,6 @@ class ChromeBridge(threading.Thread):
             return
 
         if method == "Inspector.targetCrashed":
-            if sid and (sid == self.active_game_sid or self.is_recovery_target(sid)):
-                self.request_auto_restart("Pragmatic hedefi çöktü")
             return
 
         if method == "Target.targetCreated":
