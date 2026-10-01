@@ -8339,8 +8339,8 @@ HISTORY500_SCAN = r"""
     (/\bRULET\b|\bROULETTE\b/.test(bodyT) && /STANDART|TURKCE|TÜRKÇE|HIZLI|PRIVE|PRIVÉ|VERSIYON/.test(bodyT) && lobbyCardCount >= 1)
   ));
   const hasHotColdPanel = /SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD/.test(bodyT);
-  const blockedTable = /POWER\s*UP\s*(RULET|ROULETTE|ROULET)?|POWERUP\s*(RULET|ROULETTE|ROULET)?/.test(titleT + ' ' + bodyT);
-  const hotColdOnly = hasInGameLobbyButton && activeGameUi && hasHotColdPanel && !tab;
+  const blockedTable = !lobbyLike && lobbyCardCount < 2 && hasInGameLobbyButton && /POWER\s*UP\s*(RULET|ROULETTE|ROULET)?|POWERUP\s*(RULET|ROULETTE|ROULET)?/.test(titleT + ' ' + bodyT);
+  const hotColdOnly = !lobbyLike && lobbyCardCount < 2 && hasInGameLobbyButton && activeGameUi && hasHotColdPanel && !tab;
   const gameNoSon500 = blockedTable || hotColdOnly;
 
   return {
@@ -8663,9 +8663,12 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     ].join(' '));
     return /\b(LOBI|LOBBY)\b/.test(t) && r.top <= innerHeight * 0.28 && r.left >= innerWidth * 0.45;
   }});
+  const lobbyTileCount = Array.from(document.querySelectorAll(
+    '[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]'
+  )).filter(visible).length;
   const activeGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|BAKIYE|BALANCE|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|KAZANCI|WINNINGS|JEU\s*0|VOISINS|ORPHELINS|TIERS|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY/.test(bodyText);
   const blockedActiveTable = blockedLabel(title + ' ' + bodyText);
-  const gameOverlayLikely = hasInGameLobbyButton || (hasSon500Control && /BAKIYE|BALANCE|OTOMATIK|AUTOMATIC|BAHIS|BET|SICAK|HOT|VOISINS|TIERS|ORPHELINS|JEU/.test(bodyText));
+  const gameOverlayLikely = lobbyTileCount < 2 && (hasInGameLobbyButton || (hasSon500Control && /BAKIYE|BALANCE|OTOMATIK|AUTOMATIC|BAHIS|BET|SICAK|HOT|VOISINS|TIERS|ORPHELINS|JEU/.test(bodyText)));
   if (gameOverlayLikely) {{
     if (blockedActiveTable) {{
       return {{
@@ -8827,18 +8830,27 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     || (path.includes('/apps/lobby/') && /\b(RULET|ROULETTE)\b/.test(bodyText));
 
   function findCardBox(el) {{
+    if (!el) return null;
+    if (el.closest) {{
+      const wow = el.closest('[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]');
+      if (wow && visible(wow)) {{
+        const wr = wow.getBoundingClientRect();
+        if (wr.width >= 110 && wr.width <= 490 && wr.height >= 90 && wr.height <= 450) {{
+          return wow;
+        }}
+      }}
+    }}
     let p = el;
-    let best = null;
-    for (let i = 0; i < 9 && p && p !== document.body; i++, p = p.parentElement) {{
+    for (let i = 0; i < 8 && p && p !== document.body; i++, p = p.parentElement) {{
       if (!visible(p)) continue;
       const r = p.getBoundingClientRect();
       if (r.width >= 135 && r.width <= 470 && r.height >= 105 && r.height <= 430) {{
-        best = p;
+        return p;
       }} else if (r.width > 490 || r.height > 460) {{
         break;
       }}
     }}
-    return best;
+    return null;
   }}
 
   function extractCleanTableTitle(tile, rawFallback) {{
@@ -8868,18 +8880,9 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
 
   function clickCardThumbnail(tile) {{
     if (!tile) return false;
-    try {{
-      const r0 = tile.getBoundingClientRect();
-      if (r0.top < 55 || r0.bottom > window.innerHeight - 35) {{
-        tile.scrollIntoView({{block: 'center', inline: 'center'}});
-      }}
-    }} catch (_) {{}}
-    const r = tile.getBoundingClientRect();
-    // Click the upper-center wheel/dealer thumbnail (36% from top, 48% from left),
-    // far away from the bottom-right Favorite Heart button!
-    const cx = Math.round(r.left + r.width * 0.48);
-    const cy = Math.round(r.top + r.height * 0.36);
     const isHeartEl = el => {{
+      if (!el) return false;
+      const tr = tile.getBoundingClientRect();
       let p = el;
       for (let i = 0; i < 5 && p && p !== tile; i++, p = p.parentElement) {{
         const meta = norm([
@@ -8890,49 +8893,32 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
         ].join(' '));
         if (/FAV|HEART|LIKE|BOOKMARK|WISH/.test(meta)) return true;
         const pr = p.getBoundingClientRect();
-        if (pr.width < 48 && pr.height < 48 && pr.top > r.top + r.height * 0.62 && pr.left > r.left + r.width * 0.68) {{
+        if (pr.width < 52 && pr.height < 52 && pr.top > tr.top + tr.height * 0.60 && pr.left > tr.left + tr.width * 0.65) {{
           return true;
         }}
       }}
       return false;
     }};
 
-    let pointEl = null;
-    try {{ pointEl = document.elementFromPoint(cx, cy); }} catch (_) {{}}
-    if (pointEl && (!tile.contains(pointEl) || isHeartEl(pointEl))) {{
-      pointEl = null;
+    let hit = clickable(tile);
+    if (!hit || isHeartEl(hit)) hit = tile;
+    try {{
+      hit.scrollIntoView({{block: 'center', inline: 'center'}});
+    }} catch (_) {{}}
+    try {{
+      const r = hit.getBoundingClientRect();
+      const cx = Math.round(r.left + r.width * 0.48);
+      const cy = Math.round(r.top + r.height * 0.36);
+      for (const evType of ['mouseover','mouseenter','mousemove']) {{
+        hit.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
+      }}
+    }} catch (_) {{}}
+    try {{
+      hit.click();
+      return true;
+    }} catch (_) {{
+      try {{ tile.click(); return true; }} catch (__) {{ return false; }}
     }}
-    const thumbEl = tile.querySelector('img,video,canvas,[class*="thumb" i],[class*="media" i],[class*="image" i],[class*="preview" i]');
-    const targets = [];
-    for (const cand of [pointEl, thumbEl, tile]) {{
-      if (cand && !isHeartEl(cand) && !targets.includes(cand)) targets.push(cand);
-    }}
-    for (const tEl of targets) {{
-      try {{
-        for (const evType of ['pointerover','mouseover','mouseenter','mousemove']) {{
-          tEl.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
-        }}
-      }} catch (_) {{}}
-    }}
-    // Check if hovering revealed an explicit Play/Oyna button inside the tile
-    const playBtns = Array.from(tile.querySelectorAll('button,a,[role="button"],div,span')).filter(el => {{
-      if (!visible(el) || isHeartEl(el)) return false;
-      const t = norm(el.innerText || el.textContent || '');
-      return /^(OYNA|PLAY|GİR|GIR|ENTER|OPEN)$/.test(t);
-    }});
-    if (playBtns.length) targets.unshift(playBtns[0]);
-
-    let clickedAny = false;
-    for (const tEl of targets) {{
-      try {{
-        for (const evType of ['pointerdown','mousedown','pointerup','mouseup','click']) {{
-          tEl.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, button:0, buttons:1}}));
-        }}
-        if (typeof tEl.click === 'function') tEl.click();
-        clickedAny = true;
-      }} catch (_) {{}}
-    }}
-    return clickedAny;
   }}
 
   const rawCardItems = [];
@@ -9062,35 +9048,33 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   const unclickedCards = cardHits.filter(c => !PY_CLICKED_KEYS.has(c.key));
-  if (PY_CLICK_CARDS && unclickedCards.length && clickReady) {{
-    const next = unclickedCards.find(c => (nowMs - Number(scanState.clickedKeys[c.key] || 0)) >= 4000) || null;
-    if (next) {{
-      scanState.clickedKeys[next.key] = nowMs;
-      scanState.lastCardClickAt = nowMs;
-      try {{
-        try {{ performance.clearResourceTimings(); }} catch (_) {{}}
-        clickCardThumbnail(next.hit);
-        return {{
-          ok:true,
-          mode:'card_clicked',
-          stage:'card-clicked',
-          clickedKey:next.key,
-          clickedLabel:next.label,
-          cards,
-          title,url:href
-        }};
-      }} catch (e) {{
-        return {{
-          ok:false,
-          mode:'provider_lobby',
-          stage:'card-click-failed',
-          clickedKey:next.key,
-          clickedLabel:next.label,
-          reason:String(e),
-          cards,
-          title,url:href
-        }};
-      }}
+  const next = unclickedCards[0] || null;
+  if (PY_CLICK_CARDS && next && clickReady && (nowMs - Number(scanState.clickedKeys[next.key] || 0)) >= 3500) {{
+    scanState.clickedKeys[next.key] = nowMs;
+    scanState.lastCardClickAt = nowMs;
+    try {{
+      try {{ performance.clearResourceTimings(); }} catch (_) {{}}
+      clickCardThumbnail(next.hit);
+      return {{
+        ok:true,
+        mode:'card_clicked',
+        stage:'card-clicked',
+        clickedKey:next.key,
+        clickedLabel:next.label,
+        cards,
+        title,url:href
+      }};
+    }} catch (e) {{
+      return {{
+        ok:false,
+        mode:'provider_lobby',
+        stage:'card-click-failed',
+        clickedKey:next.key,
+        clickedLabel:next.label,
+        reason:String(e),
+        cards,
+        title,url:href
+      }};
     }}
   }}
 
@@ -11393,6 +11377,8 @@ class ChromeBridge(threading.Thread):
             return
 
         if mode in ("game_no_son500", "game_blocked"):
+            if self.table_scan_tab_walk and not self.table_scan_click_deadlines:
+                return
             self._mark_current_scan_card_done(label=str(value.get("title") or ""))
             key = str(self.table_scan_current_click_key or self.table_scan_last_clicked_label or sid)
             if key:
@@ -11515,10 +11501,7 @@ class ChromeBridge(threading.Thread):
                     self.table_scan_click_attempts = attempts_map
                 attempts = int(attempts_map.get(clicked_key, 0) or 0) + 1
                 attempts_map[clicked_key] = attempts
-                # Only mark as permanently clicked before opening if we already
-                # tried clicking this exact card 3 separate times; otherwise it
-                # will be marked by _mark_current_scan_card_done once the table opens!
-                if attempts >= 3:
+                if attempts >= 2:
                     self.table_scan_clicked_keys.add(clicked_key)
             if self._is_korece_table(label=clicked_label):
                 self.table_scan_stop_after_current = True
@@ -11559,12 +11542,14 @@ class ChromeBridge(threading.Thread):
             return
 
         cards = [row for row in (value.get("cards") or []) if isinstance(row, dict)]
+        if not cards and self.table_scan_visited:
+            return
         if self.table_scan_tab_walk and cards:
             self.table_scan_lobby_seen_at = now
             last_click_age = now - float(getattr(self, "table_scan_last_card_click_ts", 0.0) or 0.0)
             if returning_to_lobby:
                 self.table_scan_returning_until = 0.0
-                self.table_scan_lobby_settle_until = now + 1.1
+                self.table_scan_lobby_settle_until = now + 0.9
                 for scan_sid in list(self.session_info.keys()):
                     if self._is_collector_session(scan_sid):
                         self.table_scan_click_deadlines.pop(scan_sid, None)
@@ -11572,11 +11557,7 @@ class ChromeBridge(threading.Thread):
                         self.session_table_activity.pop(scan_sid, None)
                 self.table_scan_current_click_key = ""
                 self.table_scan_current_click_label = ""
-            elif self.table_scan_click_deadlines and last_click_age >= 6.5:
-                # We clicked a card 6.5+ seconds ago and the browser is STILL
-                # sitting in the lobby with cards visible (the click didn't open
-                # the table). Clear the wait deadline so the next scan tick
-                # retries clicking the same card!
+            elif self.table_scan_click_deadlines and last_click_age >= 5.5:
                 for scan_sid in list(self.session_info.keys()):
                     if self._is_collector_session(scan_sid):
                         self.table_scan_click_deadlines.pop(scan_sid, None)
@@ -12505,15 +12486,11 @@ class ChromeBridge(threading.Thread):
                             if now - float(last_table_nav_scan.get(scan_key, 0.0)) < (0.8 if self.table_scan_tab_walk else 2.0):
                                 continue
                             settle_until = float(getattr(self, "table_scan_lobby_settle_until", 0.0) or 0.0)
-                            last_click_ts = float(getattr(self, "table_scan_last_card_click_ts", 0.0) or 0.0)
                             can_click_cards = bool(
                                 not returning_to_lobby
                                 and not self.table_scan_click_deadlines
                                 and now >= settle_until
-                                and (now - last_click_ts) >= 1.5
                             )
-                            if can_click_cards:
-                                self.table_scan_last_card_click_ts = now - 0.9
                             last_table_nav_scan[scan_key] = now
                             params = {
                                 "expression": build_multi_table_nav_scan(
@@ -13750,6 +13727,8 @@ class ChromeBridge(threading.Thread):
                             is_collector
                             and self.table_scan_tab_walk
                             and self.table_scan_click_deadlines
+                            and not bool(value.get("lobbyLike"))
+                            and int(value.get("lobbyCardCount", 0) or 0) < 2
                             and (
                                 value.get("blockedTable")
                                 or value.get("gameNoSon500")
