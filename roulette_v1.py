@@ -46,10 +46,10 @@ TAB_WALK_NO_SON500_SKIP_SECONDS = 6.0
 TAB_WALK_EMPTY_SON500_SKIP_SECONDS = 12.0
 TAB_WALK_RETURN_GRACE_SECONDS = 12.0
 TAB_WALK_BLOCKED_TABLE_LABELS = (
-    "POWERUP RULET", "POWERUP ROULETTE", "POWERUP ROULET",
-    "POWER UP RULET", "POWER UP ROULETTE", "POWER UP ROULET",
-    "PRIVE LOUNGE RULET DELUXE", "PRIVÉ LOUNGE RULET DELUXE",
-    "PRIVE LOUNGE ROULETTE DELUXE", "PRIVÉ LOUNGE ROULETTE DELUXE",
+    "POWERUP", "POWER UP",
+    "PRIVE LOUNGE", "PRIVÉ LOUNGE",
+    "GATES OF OLYMPUS", "OLYMPUS RULET", "OLYMPUS ROULETTE",
+    "RULET DELUXE", "ROULETTE DELUXE",
 )
 DGA_FEED_WS_URL = "wss://dga.pragmaticplaylive.net/ws"
 DGA_DEFAULT_CASINO_ID = "ppcds00000003709"
@@ -8339,7 +8339,7 @@ HISTORY500_SCAN = r"""
     (/\bRULET\b|\bROULETTE\b/.test(bodyT) && /STANDART|TURKCE|TÜRKÇE|HIZLI|PRIVE|PRIVÉ|VERSIYON/.test(bodyT) && lobbyCardCount >= 1)
   ));
   const hasHotColdPanel = /SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD/.test(bodyT);
-  const blockedTable = !lobbyLike && lobbyCardCount < 2 && hasInGameLobbyButton && /POWER\s*UP\s*(RULET|ROULETTE|ROULET)?|POWERUP\s*(RULET|ROULETTE|ROULET)?/.test(titleT + ' ' + bodyT);
+  const blockedTable = !lobbyLike && lobbyCardCount < 2 && hasInGameLobbyButton && /POWER\s*UP|PRIVE\s*LOUNGE|PRIVÉ\s*LOUNGE|GATES\s*OF\s*OLYMPUS|RULET\s*DELUXE|ROULETTE\s*DELUXE/.test(titleT + ' ' + bodyT);
   const hotColdOnly = !lobbyLike && lobbyCardCount < 2 && hasInGameLobbyButton && activeGameUi && hasHotColdPanel && !tab;
   const gameNoSon500 = blockedTable || hotColdOnly;
 
@@ -8835,7 +8835,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       const wow = el.closest('[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]');
       if (wow && visible(wow)) {{
         const wr = wow.getBoundingClientRect();
-        if (wr.width >= 110 && wr.width <= 490 && wr.height >= 90 && wr.height <= 450) {{
+        if (wr.width >= 75 && wr.width <= 490 && wr.height >= 60 && wr.height <= 450) {{
           return wow;
         }}
       }}
@@ -8844,9 +8844,9 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     for (let i = 0; i < 8 && p && p !== document.body; i++, p = p.parentElement) {{
       if (!visible(p)) continue;
       const r = p.getBoundingClientRect();
-      if (r.width >= 135 && r.width <= 470 && r.height >= 105 && r.height <= 430) {{
+      if (r.width >= 85 && r.width <= 470 && r.height >= 65 && r.height <= 430) {{
         return p;
-      }} else if (r.width > 490 || r.height > 460) {{
+      }} else if (r.width > 500 || r.height > 460) {{
         break;
       }}
     }}
@@ -8860,17 +8860,15 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       .filter(Boolean);
     for (const ln of lines) {{
       if (!/(ROULETTE|RULET)/.test(ln)) continue;
-      if (categoryLabels.has(ln)) continue;
       let cleaned = ln
         .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
-        .replace(/^(?:[0-9]{{1,2}}\s+)+/g, '')
-        .replace(/\s+(?:[0-9]{{1,5}})$/g, '')
+        .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
         .trim();
       if (cleaned.length >= 4 && /(ROULETTE|RULET)/.test(cleaned)) return cleaned.slice(0, 120);
     }}
     let full = norm(tile.innerText || tile.textContent || rawFallback || '')
       .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
-      .replace(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g, ' ')
+      .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
       .replace(/\s+/g, ' ')
       .trim();
     const m = full.match(/([A-Z0-9 ._-]{{0,32}}(?:ROULETTE|RULET)[A-Z0-9 ._-]{{0,32}})/);
@@ -8922,13 +8920,14 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   const rawCardItems = [];
+  const seenTiles = new Set();
   const seenBoxes = [];
   for (const raw of candidates.slice(0,3500)) {{
     if (!visible(raw)) continue;
     const tile = findCardBox(raw);
-    if (!tile || !visible(tile)) continue;
+    if (!tile || !visible(tile) || seenTiles.has(tile)) continue;
     const rect = tile.getBoundingClientRect();
-    if (seenBoxes.some(b => Math.abs(b.left - rect.left) < 42 && Math.abs(b.top - rect.top) < 42)) continue;
+    if (seenBoxes.some(b => Math.abs(b.left - rect.left) < 24 && Math.abs(b.top - rect.top) < 24)) continue;
 
     let tableId=firstAttrInTree(tile, ['data-table-id','data-tableid','tableid','table-id','data-table_id']);
     let gameId=firstAttrInTree(tile, ['data-gameid','data-game-id','gameid','game-id','data-game_id']);
@@ -8942,7 +8941,6 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     if (blockedLabel(text)) continue;
     if (!textLooksRoulette && !(rouletteContext && (tableId || gameId))) continue;
     if (badCardText.test(text)) continue;
-    if (categoryLabels.has(text)) continue;
 
     let cleanTitle = extractCleanTableTitle(tile, text);
     if (blockedLabel(cleanTitle)) continue;
@@ -8963,6 +8961,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     if (!cleanTitle && (gameId || tableId)) cleanTitle = 'ROULETTE ' + (gameId || tableId);
     const key = (tableId || cleanTitle).slice(0, 180);
     if (!key) continue;
+    seenTiles.add(tile);
     seenBoxes.push(rect);
     rawCardItems.push({{
       key,
@@ -8977,27 +8976,34 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   // Sort strictly row-by-row (top to bottom), then column-by-column (left to right)
-  // so the scanner NEVER jumps from Row 1 Col 1 (Almanca) to Row 2 Col 1 (Rumence)!
+  // using relative row tolerance so both 3-card and 4-card rows sort 1 -> 2 -> 3 -> 4!
   rawCardItems.sort((a, b) => {{
-    const rowDiff = Math.round(a.rect.top / 55) - Math.round(b.rect.top / 55);
-    if (rowDiff !== 0) return rowDiff;
+    const rowTol = Math.max(22, Math.min(a.rect.height, b.rect.height) * 0.45);
+    if (Math.abs(a.rect.top - b.rect.top) > rowTol) {{
+      return a.rect.top - b.rect.top;
+    }}
     return a.rect.left - b.rect.left;
   }});
 
+  const titleCounts = new Map();
   for (const item of rawCardItems) {{
-    if (seen.has(item.key)) continue;
-    seen.add(item.key);
+    const dupIdx = (titleCounts.get(item.key) || 0) + 1;
+    titleCounts.set(item.key, dupIdx);
+    const uniqueKey = (!item.table_id && dupIdx > 1) ? (item.key + ' #' + dupIdx) : item.key;
+    const uniqueLabel = (!item.table_id && dupIdx > 1) ? (item.label + ' #' + dupIdx) : item.label;
+    if (seen.has(uniqueKey)) continue;
+    seen.add(uniqueKey);
     cards.push({{
-      key: item.key,
-      label: item.label,
+      key: uniqueKey,
+      label: uniqueLabel,
       href: item.href,
       testid: item.testid,
       table_id: item.table_id,
       game_id: item.game_id
     }});
     cardHits.push({{
-      key: item.key,
-      label: item.label,
+      key: uniqueKey,
+      label: uniqueLabel,
       hit: item.tile,
       rect: item.rect
     }});
@@ -16955,6 +16961,14 @@ def table_scan_self_test():
     assert bridge._is_korece_table(theme_code="pp_roulette_crl_chroma_korean_roulette")
     assert bridge._is_korece_table(label="Korece Rulet")
     assert not bridge._is_korece_table(label="Almanca Rulet")
+    assert bridge._is_blocked_table_label("Privé Lounge Rulet Deluxe")
+    assert bridge._is_blocked_table_label("Privé Lounge Rulet")
+    assert bridge._is_blocked_table_label("Gates of Olympus Rulet")
+    assert bridge._is_blocked_table_label("PowerUP Rulet")
+    assert bridge._is_blocked_table_label("Rulet Deluxe")
+    assert not bridge._is_blocked_table_label("Hızlı Rulet 1")
+    assert not bridge._is_blocked_table_label("Hızlı Rulet 3")
+    assert not bridge._is_blocked_table_label("VIP Otomatik Rulet")
 
     discovered = extract_pragmatic_roulette_tables({
         "games": [{"tableId": "table-17", "gameName": "Roulette Table 17"}]
