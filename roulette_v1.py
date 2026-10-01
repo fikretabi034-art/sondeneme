@@ -3510,13 +3510,30 @@ def detect_new_front_large(old_newest, new_newest, max_new=500):
         if overlap >= 12 and new[k:k+overlap] == old[:overlap]:
             return new[:k]
 
-    # Fallback: search for the old first 16-result signature within new.
-    sig_len = min(16, len(old))
+    # Fallback 1: search for the old first 12-result signature within new.
+    sig_len = min(12, len(old))
     if sig_len >= 8:
         sig = old[:sig_len]
-        for k in range(1, min(len(new), max_new + 1)):
+        for k in range(1, min(len(new) - sig_len + 1, max_new + 1)):
             if new[k:k+sig_len] == sig:
                 return new[:k]
+
+    # Fallback 2: offset-tolerant 10-gram anchor (handles 1-2 spin DOM/multiplier
+    # differences near index 0 of old while still requiring a 10-number exact match).
+    anchor_len = 10
+    if len(old) >= anchor_len + 8 and len(new) >= anchor_len + 2:
+        for off in (1, 2, 3, 5, 8):
+            if off + anchor_len > len(old):
+                break
+            anchor = old[off:off + anchor_len]
+            if len(set(anchor)) < 4:
+                continue
+            limit_pos = min(len(new) - anchor_len, max_new + off)
+            for pos in range(off + 1, limit_pos + 1):
+                if new[pos:pos + anchor_len] == anchor:
+                    k = pos - off
+                    if 1 <= k <= max_new:
+                        return new[:k]
 
     return []
 
@@ -3527,9 +3544,8 @@ _LONG_ARCHIVE_CACHE = {}
 def sanitize_long_archive(results_newest_first, window=8):
     """
     Fast, single-pass archive sanitizer (<0.3ms per table).
-    Removes consecutive short ping-pong repeats, global 8-gram duplicate blocks
-    (forward & reversed), local 5-gram duplicates within 120 spins, and runaway
-    2-gram ping-pong spikes.
+    Preserves all genuine roulette spins while removing accidental >=10-gram
+    duplicate blocks (forward & reversed) or back-to-back tandem block repeats.
     """
     raw = [
         int(x) for x in (results_newest_first or [])
@@ -3539,24 +3555,23 @@ def sanitize_long_archive(results_newest_first, window=8):
     if n_raw <= 500:
         return raw
 
-    # Pass 1: Fast collapse of consecutive short tandem repeats (only checks p when raw[idx] == raw[idx+p])
+    # Pass 1: Collapse only genuine back-to-back tandem block repeats (p >= 6)
     clean = []
     idx = 0
     while idx < n_raw:
         jumped = False
         cur_val = raw[idx]
         max_p = min(20, (n_raw - idx) // 2)
-        for p in range(1, max_p + 1):
+        for p in range(6, max_p + 1):
             if raw[idx + p] != cur_val:
                 continue
-            min_reps = 4 if p == 1 else (3 if p <= 3 else 2)
-            if idx + p * min_reps > n_raw:
+            if idx + p * 2 > n_raw:
                 continue
             unit = raw[idx:idx + p]
             reps = 1
             while idx + (reps + 1) * p <= n_raw and raw[idx + reps * p:idx + (reps + 1) * p] == unit:
                 reps += 1
-            if reps >= min_reps:
+            if reps >= 2:
                 idx += (reps - 1) * p
                 jumped = True
                 break
@@ -3565,81 +3580,45 @@ def sanitize_long_archive(results_newest_first, window=8):
             idx += 1
 
     n = len(clean)
-    if n < 16:
+    if n < 20:
         return clean
 
-    # Pass 2: Fast block deduplication without inner tuple-allocation loops
+    # Pass 2: Deduplicate only >=10-gram duplicate blocks (forward or reversed)
     out = []
-    seen_8_fwd = {}
-    seen_8_rev = {}
-    last_pos_5 = {}
-    last_pos_3 = {}
-    pair_counts = Counter()
+    seen_10_fwd = {}
+    seen_10_rev = {}
 
     i = 0
     while i < n:
         cur_len = len(out)
 
-        # 1) Global 8-gram duplicate block (forward or reversed)
-        if i + 8 <= n:
-            g8 = tuple(clean[i:i + 8])
-            prev_pos = seen_8_fwd.get(g8)
+        if i + 10 <= n:
+            g10 = tuple(clean[i:i + 10])
+            prev_pos = seen_10_fwd.get(g10)
             if prev_pos is not None:
-                k = 8
+                k = 10
                 while i + k < n and prev_pos + k < cur_len and clean[i + k] == out[prev_pos + k]:
                     k += 1
                 i += k
                 continue
-            prev_rev_end = seen_8_rev.get(g8)
+            prev_rev_end = seen_10_rev.get(g10)
             if prev_rev_end is not None:
-                k = 8
+                k = 10
                 while i + k < n and prev_rev_end - 1 - k >= 0 and clean[i + k] == out[prev_rev_end - 1 - k]:
                     k += 1
                 i += k
                 continue
 
-        # 2) Local 5-gram duplicate within 120 spins
-        if i + 5 <= n:
-            g5 = tuple(clean[i:i + 5])
-            p5 = last_pos_5.get(g5)
-            if p5 is not None and (cur_len - p5) <= 120:
-                k = 5
-                while i + k < n and p5 + k < cur_len and clean[i + k] == out[p5 + k]:
-                    k += 1
-                i += k
-                continue
-
-        # 3) Local 3-gram duplicate within 25 spins
-        if i + 3 <= n:
-            g3 = tuple(clean[i:i + 3])
-            p3 = last_pos_3.get(g3)
-            if p3 is not None and (cur_len - p3) <= 25:
-                i += 3
-                continue
-
-        # 4) Runaway 2-gram ping-pong spike cap
-        if i + 2 <= n:
-            g2 = (clean[i], clean[i + 1])
-            if pair_counts[g2] >= max(9, cur_len // 180):
-                i += 2
-                continue
-
         val = clean[i]
         out.append(val)
         cur_len = len(out)
-        if cur_len >= 2:
-            pair_counts[(out[-2], out[-1])] += 1
-        if cur_len >= 3:
-            last_pos_3[tuple(out[-3:])] = cur_len - 3
-        if cur_len >= 5:
-            last_pos_5[tuple(out[-5:])] = cur_len - 5
-        if cur_len >= 8:
-            g8_out = tuple(out[-8:])
-            if g8_out not in seen_8_fwd:
-                seen_8_fwd[g8_out] = cur_len - 8
-            rev_g8 = tuple(reversed(g8_out))
-            if rev_g8 not in seen_8_rev:
-                seen_8_rev[rev_g8] = cur_len
+        if cur_len >= 10:
+            g10_out = tuple(out[-10:])
+            if g10_out not in seen_10_fwd:
+                seen_10_fwd[g10_out] = cur_len - 10
+            rev_g10 = tuple(reversed(g10_out))
+            if rev_g10 not in seen_10_rev:
+                seen_10_rev[rev_g10] = cur_len
         i += 1
 
     return out
@@ -5878,7 +5857,53 @@ class RouletteState:
         ).strip("_")
         key = safe_table_key(identity)
 
+        clean_grams_12 = {
+            tuple(clean[i:i + 12])
+            for i in range(max(0, min(80, len(clean)) - 11))
+        } if len(clean) >= 12 else set()
+        disp_norm = str(display_name or "").strip().upper()
+        migrated_long = []
+
         with self.lock:
+            for other_tid in list(self.table_registry.keys()):
+                if other_tid == tid:
+                    continue
+                other_row = self.table_registry.get(other_tid) or {}
+                other_disp = str(other_row.get("display_name") or "").strip().upper()
+                other_ident = "pragmatic_" + re.sub(r"[^A-Za-z0-9_-]+", "_", str(other_tid)).strip("_")
+                other_key = safe_table_key(other_ident)
+                other_seq = self._pool_memory_tables.get(other_key) or []
+                other_grams_12 = {
+                    tuple(other_seq[i:i + 12])
+                    for i in range(max(0, min(80, len(other_seq)) - 11))
+                } if len(other_seq) >= 12 else set()
+                same_table_match = bool(
+                    (clean_grams_12 and other_grams_12 and (clean_grams_12 & other_grams_12))
+                    or (
+                        disp_norm
+                        and other_disp
+                        and disp_norm == other_disp
+                        and (tid.startswith("collector_") or str(other_tid).startswith("collector_"))
+                    )
+                )
+                if not same_table_match:
+                    continue
+                if tid.startswith("collector_") and not str(other_tid).startswith("collector_"):
+                    tid = str(other_tid)
+                    identity = other_ident
+                    key = other_key
+                    if (not display_name or display_name == tid) and other_row.get("display_name"):
+                        display_name = str(other_row.get("display_name"))
+                    break
+                elif str(other_tid).startswith("collector_") and not tid.startswith("collector_"):
+                    old_row = self.table_registry.pop(other_tid, None) or {}
+                    popped_seq = self._pool_memory_tables.pop(other_key, None) or []
+                    if len(popped_seq) > len(migrated_long):
+                        migrated_long = list(popped_seq)
+                    self._memory_table500.pop(other_key, None)
+                    if (not display_name or display_name == tid) and old_row.get("display_name"):
+                        display_name = str(old_row.get("display_name"))
+
             previous = list(self._memory_table500.get(key) or [])
             long_hist = list(self._pool_memory_tables.get(key) or [])
 
@@ -5889,6 +5914,8 @@ class RouletteState:
                 self.data_dir,
                 identity,
             )
+        if not long_hist and migrated_long:
+            long_hist = list(migrated_long)
 
         # CRITICAL: Never create a brand-new table archive from a 20-spin DGA
         # lobby preview! A table must first have a real >= 40 spin (SON 500)
@@ -5900,40 +5927,26 @@ class RouletteState:
         clean = self._normalize_background_window(clean, ref_window)
 
         dirty_long = False
-        if not long_hist or (len(long_hist) < 500 and len(clean) > len(long_hist)):
-            # Full SON 500 backfill when archive was empty or had fewer than 500 spins:
-            # replace a partial 483-spin DOM capture cleanly with the 500-spin API capture
-            # instead of concatenating 483 + 500 into 983 spins!
-            added_front = detect_new_front_large(long_hist[:500], clean, max_new=120) if long_hist else []
-            if added_front and len(added_front) <= 120:
-                merged = list(added_front) + list(long_hist)
-            else:
-                merged = list(clean)
-            long_hist = sanitize_long_archive(merged)
-            added = list(added_front) if added_front else list(long_hist)
-            dirty_long = True
-        elif len(long_hist) > 550 and len(clean) >= 480:
-            # Auto-repair archives that were previously doubled (~984 spins = 484 DOM + 500 API)
-            added_front = detect_new_front_large(long_hist[:500], clean, max_new=60)
-            if added_front and len(added_front) <= 60:
-                long_hist = sanitize_long_archive(list(added_front) + list(clean))
-                added = list(added_front)
-            else:
-                long_hist = sanitize_long_archive(list(clean))
-                added = []
+        added = []
+        if not long_hist:
+            long_hist = sanitize_long_archive(list(clean))
+            added = list(long_hist)
             dirty_long = True
         else:
             added = detect_new_front_large(
                 long_hist[:500],
                 clean,
-                max_new=120,
+                max_new=250,
             )
             if added:
                 long_hist = sanitize_long_archive(list(added) + list(long_hist))
                 dirty_long = True
+            elif len(long_hist) < 500 and len(clean) > len(long_hist):
+                long_hist = sanitize_long_archive(list(clean))
+                dirty_long = True
 
-        # Never overwrite a 500-spin file with a 20-spin DGA frame.
-        if len(clean) >= len(previous):
+        # Never overwrite a 500-spin file with a shorter DOM frame when no new spins arrived.
+        if len(clean) >= len(previous) and (len(clean) >= 498 or not previous or added):
             new_500 = list(clean[:500])
         elif added:
             new_500 = (list(added) + list(previous))[:500]
@@ -5941,43 +5954,11 @@ class RouletteState:
             new_500 = list(previous)
         dirty_500 = new_500 != previous
 
-        # Never create a synthetic collector_ entry in MASA BANKASI if we only
-        # have a fallback hash, or deduplicate if an identical 12-gram table
-        # already exists in _pool_memory_tables.
-        probe_12 = tuple(long_hist[:12]) if len(long_hist) >= 12 else None
         with self.lock:
             if identity == str(self.table_long_table or ""):
                 self.table_long_history = list(long_hist)
             if dirty_500:
                 self._memory_table500[key] = list(new_500)
-
-            if probe_12 is not None:
-                for other_tid in list(self.table_registry.keys()):
-                    if other_tid == tid:
-                        continue
-                    other_ident = "pragmatic_" + re.sub(r"[^A-Za-z0-9_-]+", "_", str(other_tid)).strip("_")
-                    other_key = safe_table_key(other_ident)
-                    other_seq = self._pool_memory_tables.get(other_key) or []
-                    if len(other_seq) >= 12:
-                        other_grams = {
-                            tuple(other_seq[i:i + 12])
-                            for i in range(min(80, len(other_seq) - 11))
-                        }
-                        if probe_12 in other_grams:
-                            if tid.startswith("collector_") and not str(other_tid).startswith("collector_"):
-                                tid = str(other_tid)
-                                identity = other_ident
-                                key = other_key
-                                break
-                            elif str(other_tid).startswith("collector_") or (
-                                display_name
-                                and str((self.table_registry.get(other_tid) or {}).get("display_name") or "") == str(display_name)
-                            ):
-                                old_row = self.table_registry.pop(other_tid, None) or {}
-                                self._pool_memory_tables.pop(other_key, None)
-                                self._memory_table500.pop(other_key, None)
-                                if (not display_name or display_name == tid) and old_row.get("display_name"):
-                                    display_name = str(old_row.get("display_name"))
 
             self._update_table_registry(
                 tid,
@@ -6166,20 +6147,15 @@ class RouletteState:
                 dirty_long = True
             else:
                 added = list(new_front)
-                if added and len(added) <= 120:
+                if added and len(added) <= 250:
                     self.table_long_history = sanitize_long_archive(
                         added + self.table_long_history
                     )
                     dirty_long = True
-                elif (
-                    "statisticHistory" in str(source_label or "")
-                    and len(clean) >= 490
-                    and len(self.table_long_history) > 550
-                ):
-                    # Repair previously doubled (483 DOM + 500 API = ~983) archive
+                elif len(self.table_long_history) < 500 and len(clean) > len(self.table_long_history):
                     self.table_long_history = sanitize_long_archive(clean)
                     dirty_long = True
-                added_count = len(added) if len(added) <= 120 else 0
+                added_count = len(added) if len(added) <= 250 else 0
 
             had_500_before = len(self.table_history_500) >= 20
             dirty_500 = clean != previous_500
@@ -7431,10 +7407,31 @@ class RouletteState:
                             )
                             if add_long:
                                 self.table_long_history = list(add_long) + list(self.table_long_history)
+                                self.table_long_source = (
+                                    f"UZUN MASA ARŞİVİ: {len(self.table_long_history)} (+{len(add_long)})"
+                                )
                                 t_id_now = str(self._storage_identity(self.table_name or incoming_table or ""))
                                 key_now = safe_table_key(t_id_now or "roulette")
                                 self._pool_memory_tables[key_now] = list(self.table_long_history)
                                 self._pool_dirty = True
+                                if self.pragmatic_table_id:
+                                    self._update_table_registry(
+                                        self.pragmatic_table_id,
+                                        display_name=self.table_name or incoming_table,
+                                        long_count=len(self.table_long_history),
+                                        source="CANLI SPIN",
+                                        theme_code=self.pragmatic_theme_code,
+                                        operator_game_id=self.pragmatic_operator_game_id,
+                                        save_disk=False,
+                                    )
+                                try:
+                                    save_table_long_archive(
+                                        self.data_dir,
+                                        t_id_now or "roulette",
+                                        self.table_long_history,
+                                    )
+                                except Exception:
+                                    pass
 
                         # Calculate once, immediately, and lock for this round.
                         self.pending_prediction = self._make_prediction(self.history)
@@ -8205,7 +8202,8 @@ HISTORY500_SCAN = r"""
       const idx = rawTxt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
       const sliced = idx >= 0 ? rawTxt.slice(idx).replace(/^(?:SON|LAST)\s*500\b/i, "") : rawTxt;
       if (!/%/.test(sliced)) {
-        nums = (sliced.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || []).map(Number);
+        const noMult = sliced.replace(/[0-9]{2,4}\s*[xX]/g, " ");
+        nums = (noMult.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || []).map(Number);
       }
       if (nums.length < 40) {
         nums = sortedNumericLeaves(r, tr.bottom - 4);
@@ -16977,10 +16975,55 @@ def table_scan_self_test():
         "table_id": "table-17",
         "display_name": "Roulette Table 17",
     }]
-    old_window = [(i * 7) % 37 for i in range(500)]
+    old_window = [(i * 7 + (i // 9)) % 37 for i in range(500)]
     next_window = [8, 19] + old_window[:498]
     assert detect_new_front_large(old_window, old_window) == []
     assert detect_new_front_large(old_window, next_window) == [8, 19]
+    # Offset-tolerant anchor match when old[0] had a 1-spin DOM discrepancy
+    old_glitched = [36] + old_window[1:]
+    next_glitched = [14, 23, 5] + old_window[:497]
+    assert detect_new_front_large(old_glitched, next_glitched) == [14, 23, 5]
+    assert "noMult" in HISTORY500_SCAN
+
+    # Verify multi-pass re-scans monotonically increase table_long_archive & ORTAK HAVUZ
+    # even when background500 arrives with collector_<hash> or exceeds 550 spins.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        st = object.__new__(RouletteState)
+        st.lock = threading.Lock()
+        st.data_dir = tmpdir
+        st.pragmatic_table_id = ""
+        st.table_name = ""
+        st.table_long_table = ""
+        st.history = []
+        st.pending_prediction = None
+        st.table_registry = {}
+        st._pool_memory_tables = {}
+        st._memory_table500 = {}
+        st._pool_dirty = False
+        base_500 = [((i * 11 + (i * i) % 17 + (i // 7) * 3) % 37) for i in range(500)]
+        r_scan1 = st.store_background_table_history(
+            base_500, "204", display_name="Mega Rulet", source_label="PRAGMATIC statisticHistory"
+        )
+        assert r_scan1 == 500
+        assert st.table_registry["204"]["long_count"] == 500
+        # Pass 2: arrives first from DOM SON 500 with collector_<hash> and 12 new spins
+        scan2_500 = [((i * 5 + 3) % 37) for i in range(12)] + base_500[:488]
+        r_scan2 = st.store_background_table_history(
+            scan2_500, "collector_deadbeef", display_name="Mega Rulet", source_label="ARKA PLAN SON 500"
+        )
+        assert "collector_deadbeef" not in st.table_registry
+        assert r_scan2 == 12
+        assert st.table_registry["204"]["long_count"] == 512
+        assert len(st._pool_memory_tables["pragmatic_204"]) == 512
+        # Pass 3: arrives from statisticHistory with 55 more new spins (total 567 > 550)
+        scan3_500 = [((i * 13 + (i * i) % 29 + (i // 5) * 7 + 2) % 37) for i in range(55)] + scan2_500[:445]
+        r_scan3 = st.store_background_table_history(
+            scan3_500, "204", display_name="Mega Rulet", source_label="PRAGMATIC statisticHistory"
+        )
+        assert r_scan3 == 55
+        assert st.table_registry["204"]["long_count"] == 567
+        assert len(st._pool_memory_tables["pragmatic_204"]) == 567
     return True
 
 
