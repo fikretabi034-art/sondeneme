@@ -5318,15 +5318,15 @@ class RouletteState:
                         if is_long
                         else fname[len("table_history500_"):-5]
                     )
-                    if is_long and len(raw_clean) >= 20:
+                    if is_long and len(raw_clean) >= 40:
                         clean = load_table_long_archive(self.data_dir, tkey)
                         try:
                             mtime = os.path.getmtime(fpath)
                         except Exception:
                             pass
                     else:
-                        clean = sanitize_long_archive(raw_clean) if len(raw_clean) >= 20 else raw_clean
-                    if len(clean) >= 20:
+                        clean = sanitize_long_archive(raw_clean) if len(raw_clean) >= 40 else []
+                    if len(clean) >= 40:
                         self._pool_disk_cache[fpath] = (mtime, tkey, clean)
                 except Exception:
                     continue
@@ -5341,6 +5341,8 @@ class RouletteState:
         for fpath, (mtime, tkey, seq) in self._pool_disk_cache.items():
             # Skip synthetic collector_ fallback keys if we already have real tables
             if tkey.startswith("pragmatic_collector_"):
+                continue
+            if len(seq) < 40:
                 continue
             is_long_file = os.path.basename(fpath).startswith("table_long_archive_")
             prev = by_key.get(tkey)
@@ -5358,7 +5360,7 @@ class RouletteState:
         for tkey, seq in (getattr(self, "_pool_memory_tables", {}) or {}).items():
             if tkey.startswith("pragmatic_collector_"):
                 continue
-            if len(seq) >= 20:
+            if len(seq) >= 40:
                 prev = by_key.get(tkey)
                 if prev is None or len(seq) >= len(prev):
                     by_key[tkey] = list(seq)
@@ -5367,7 +5369,7 @@ class RouletteState:
         active_identity = self._storage_identity(self.table_name)
         active_key = safe_table_key(active_identity or "default")
         active_seq = list(self.table_long_history or self.table_history_500 or [])
-        if len(active_seq) >= 20:
+        if len(active_seq) >= 40:
             prev = by_key.get(active_key)
             if prev is None or len(active_seq) >= len(prev):
                 by_key[active_key] = active_seq
@@ -5441,7 +5443,18 @@ class RouletteState:
             with open(self.registry_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             if isinstance(raw, dict):
-                return raw
+                cleaned = {}
+                for tid, row in raw.items():
+                    if not isinstance(row, dict):
+                        continue
+                    lc = int(row.get("long_count", 0) or 0)
+                    name_up = str(row.get("display_name") or "").upper()
+                    if lc < 40:
+                        continue
+                    if any(str(b).upper() in name_up for b in TAB_WALK_BLOCKED_TABLE_LABELS):
+                        continue
+                    cleaned[tid] = row
+                return cleaned
         except Exception:
             pass
         return {}
@@ -5537,11 +5550,18 @@ class RouletteState:
             self._pool_memory_tables = {}
             self._pool_disk_cache = {}
             self._cached_pool_seq = []
+            self._cached_pool_tables = 0
+            self._cached_pool_spins = 0
             self._cached_pool_meta = {"tables": 0, "spins": 0, "dup_tables": 0}
-            self._pool_dirty = True
+            self._pool_dirty = False
+            self._last_pool_rebuild_ts = time.time()
+            self._pool_last_disk_scan = time.time()
             self._last_pool_disk_scan_ts = 0.0
+            self.imported_history = []
+            self.imported_source = "ORTAK HAVUZ: geçmiş masa verileri silindi • yeni tarama bekleniyor"
             self.table_history_500 = []
             self.table_long_history = []
+            self.direct_history_count = 0
             self.table_history_source = "MASA SON500: geçmiş veriler silindi"
             self.table_long_source = "UZUN MASA ARŞİVİ: 0"
             self.archive_source = "ORTAK HAVUZ: geçmiş masa verileri silindi • yeni tarama bekleniyor"
@@ -5561,7 +5581,14 @@ class RouletteState:
         tid = str(table_id or "").strip()
         if not tid:
             return
+        name_up = str(display_name or "").upper()
+        if any(str(b).upper() in name_up for b in TAB_WALK_BLOCKED_TABLE_LABELS):
+            return
         with self.lock:
+            # Do not insert unvisited 0-spin lobby cards into MASA BANKASI unless
+            # the user explicitly enabled manual API teach mode.
+            if tid not in self.table_registry and str(source or "") != "API ÖĞREN":
+                return
             row = dict(self.table_registry.get(tid, {}) or {})
             row["table_id"] = tid
             if display_name:
@@ -5580,6 +5607,8 @@ class RouletteState:
         if not tid:
             return
         with self.lock:
+            if tid not in self.table_registry:
+                return
             row = dict(self.table_registry.get(tid, {}) or {})
             row["table_id"] = tid
             row["last_attempt"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -5699,6 +5728,9 @@ class RouletteState:
         tid = str(table_id or "").strip()
         if not tid:
             return 0
+        name_up = str(display_name or "").upper()
+        if any(str(b).upper() in name_up for b in TAB_WALK_BLOCKED_TABLE_LABELS):
+            return 0
 
         clean = []
         for x in results or []:
@@ -5734,12 +5766,23 @@ class RouletteState:
                 identity,
             )
 
+        # CRITICAL: Never create a brand-new table archive from a 20-spin DGA
+        # lobby preview! A table must first have a real >= 40 spin (SON 500)
+        # history before 20-spin incremental updates are allowed.
+        if len(long_hist) < 40 and len(clean) < 40:
+            return 0
+
         ref_window = long_hist[:500] if long_hist else previous
         clean = self._normalize_background_window(clean, ref_window)
 
         dirty_long = False
-        if not long_hist:
-            long_hist = sanitize_long_archive(clean)
+        if not long_hist or (len(long_hist) < 500 and len(clean) > len(long_hist)):
+            # Full SON 500 backfill when archive was empty or had fewer than 500 spins
+            added_front = detect_new_front_large(long_hist[:500], clean, max_new=500) if long_hist else []
+            merged = list(added_front) + list(long_hist) if added_front else list(clean)
+            if len(clean) > len(merged):
+                merged = list(clean)
+            long_hist = sanitize_long_archive(merged)
             added = list(long_hist)
             dirty_long = True
         else:
@@ -10005,6 +10048,17 @@ class ChromeBridge(threading.Thread):
                 if discovered and not self.manual_api_teach:
                     self._register_discovered_tables(discovered, source="DGA websocket subscribe")
                 handled = True
+        # CRITICAL: Do NOT save 20-spin Chrome DGA WebSocket lobby previews in
+        # the background unless the user explicitly enabled DGA live collection
+        # (and is NOT running TEK SEKME LOBİ TOPLA). Even then, only update
+        # tables that already have a >= 40 spin SON 500 bank!
+        dga_active = bool(
+            (self.chrome_dga_enabled or getattr(self.dga_feed, "enabled", False))
+            and not self.table_scan_tab_walk
+        )
+        if not dga_active:
+            return handled
+
         rows = extract_dga_feed_tables(payload)
         if rows:
             handled = True
@@ -10014,7 +10068,12 @@ class ChromeBridge(threading.Thread):
                 name = str(row.get("display_name") or tid)
                 if not tid:
                     continue
-                if len(nums) >= 20:
+                if self._is_blocked_table_label(name):
+                    continue
+                with self.state.lock:
+                    existing_row = self.state.table_registry.get(tid) or {}
+                    existing_count = int(existing_row.get("long_count", 0) or 0)
+                if len(nums) >= 20 and existing_count >= 40:
                     key = tuple(nums[:20])
                     if self.dga_frame_last_keys.get(tid) == key:
                         continue
@@ -10029,11 +10088,6 @@ class ChromeBridge(threading.Thread):
                         self.state.table_scan_status = (
                             f"DGA CANLI: Chrome feed veri aldı • {name[:48]}"
                         )
-                elif tid not in self.collector_seen:
-                    self._register_discovered_tables(
-                        [{"table_id": tid, "display_name": name}],
-                        source="Chrome DGA WebSocket",
-                    )
         return handled
 
     def _collector_launch_url(self):
@@ -11972,7 +12026,8 @@ class ChromeBridge(threading.Thread):
                             )
 
                 self._select_active_table()
-                self._collector_tick()
+                if getattr(self, "api_refresh_mode", False):
+                    self._collector_tick()
                 self._poll_chrome_dga_runtime()
                 self._pump_table_scan_probes()
             except Exception:
@@ -14527,9 +14582,17 @@ class App:
     def clear_past_tables_ui(self):
         self.state.clear_all_past_table_data()
         try:
+            self.bridge.chrome_dga_enabled = False
+            try:
+                self.bridge.dga_feed.stop_collection("geçmiş masa verileri silindi")
+            except Exception:
+                pass
             with self.bridge.collector_lock:
                 self.bridge.collector_seen = {}
                 self.bridge.collector_inflight = set()
+            self.bridge.dga_frame_last_keys = {}
+            self.bridge._recent_dga_payloads = {}
+            self.bridge.direct_api_seen = {}
             self.bridge.table_scan_probed_keys = set()
             self.bridge.table_scan_probe_done = set()
             self.bridge.table_scan_probe_success = set()
