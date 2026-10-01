@@ -5399,9 +5399,15 @@ class RouletteState:
         unique_keys = set()
         duplicate_keys = set()
         combined_existing_grams = set()
+        has_pragmatic_keys = any(k.startswith("pragmatic_") for k in ordered_keys)
         for k in ordered_keys:
             seq = by_key[k]
             if len(seq) < 40 or is_betting_grid_artifact(seq[:50]):
+                duplicate_keys.add(k)
+                continue
+            # When real pragmatic_<tableId> archives exist, ignore legacy
+            # URL/title-keyed archives so ORTAK HAVUZ and MASA BANKASI match 1-to-1.
+            if has_pragmatic_keys and not k.startswith("pragmatic_") and k != active_key:
                 duplicate_keys.add(k)
                 continue
             probes = _probe_grams(seq, 12, 16)
@@ -5411,6 +5417,28 @@ class RouletteState:
             unique_seqs.append(seq)
             unique_keys.add(k)
             combined_existing_grams.update(_all_grams(seq, 12))
+
+        # Ensure the active Pragmatic table is also reflected in table_registry
+        # so MASA BANKASI and ORTAK HAVUZ always show the exact same table & spin count.
+        if (
+            self.pragmatic_table_id
+            and not str(self.pragmatic_table_id).startswith("collector_")
+            and active_key in unique_keys
+            and isinstance(self.table_registry, dict)
+            and self.pragmatic_table_id not in self.table_registry
+        ):
+            act_len = len(by_key.get(active_key, []))
+            self.table_registry[self.pragmatic_table_id] = {
+                "table_id": str(self.pragmatic_table_id),
+                "display_name": str(self.table_name or self.pragmatic_table_id)[:90],
+                "last_update": now,
+                "last_attempt": now,
+                "count_500": min(500, act_len),
+                "long_count": act_len,
+                "last_source": "AKTİF MASA SON500",
+                "last_head": list(by_key.get(active_key, [])[:10]),
+                "ok": True,
+            }
 
         # Keep MASA BANKASI (table_registry) 1-to-1 synchronized with ORTAK HAVUZ
         # deduplication so duplicate wheels / collector_ keys do not inflate
@@ -7705,12 +7733,13 @@ DOM_SCAN = r"""
 (() => {
   function vis(el) {
     const r = el.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) return false;
     const s = getComputedStyle(el);
-    return r.width > 1 && r.height > 1 &&
-           s.display !== "none" && s.visibility !== "hidden";
+    return s.display !== "none" && s.visibility !== "hidden";
   }
 
-  const bodyText = ((document.body && document.body.innerText) || "")
+  const bodyText = ((document.body && document.body.textContent) || "")
+    .slice(0, 120000)
     .replace(/\s+/g, " ")
     .toUpperCase();
   const hasActiveGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|VOISINS|ORPHELINS|TIERS|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY|\bSON\s*500\b|\bLAST\s*500\b/.test(bodyText);
@@ -7719,10 +7748,10 @@ DOM_SCAN = r"""
   if (!hasActiveGameUi) {
     const seenCards = new Set();
     for (const el of document.querySelectorAll(tileSel)) {
-      if (!vis(el)) continue;
-      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toUpperCase();
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim().toUpperCase();
       const hasId = !!(el.getAttribute("data-gameid") || el.getAttribute("data-game-id") || el.getAttribute("data-table-id") || el.getAttribute("data-tableid"));
       if (!hasId && !/(ROULETTE|RULET)/.test(t)) continue;
+      if (!vis(el)) continue;
       const k = (t.slice(0, 60) + "|" + (el.getAttribute("data-gameid") || el.getAttribute("data-table-id") || "")).slice(0, 100);
       if (seenCards.has(k)) continue;
       seenCards.add(k);
@@ -7749,35 +7778,20 @@ DOM_SCAN = r"""
   const out = [];
   const seen = new Set();
 
-  function queryAllDeep(selector) {
-    const res = [];
-    const visited = new Set();
-    function walk(root) {
-      if (!root || visited.has(root)) return;
-      visited.add(root);
-      try {
-        for (const n of root.querySelectorAll(selector)) res.push(n);
-      } catch (_) {}
-      try {
-        for (const el of root.querySelectorAll('*')) {
-          if (el.shadowRoot) walk(el.shadowRoot);
-          if (el.tagName === 'IFRAME' && el.contentDocument) walk(el.contentDocument);
-        }
-      } catch (_) {}
-    }
-    walk(document);
-    return res;
-  }
-
   // 1) Check if the SON 500 / LAST 500 drawer is visibly open.
-  // When open, extract the grid numbers directly after the "SON 500" / "LAST 500" header!
+  // Check lightweight textContent length FIRST before calling vis(el) so we
+  // never trigger synchronous layout/style reflow on thousands of DOM nodes!
   let son500Tab = null;
-  for (const el of queryAllDeep('button,[role="tab"],[role="button"],div,span,a')) {
-    if (!vis(el)) continue;
-    const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toUpperCase();
+  for (const el of document.querySelectorAll('button,[role="tab"],[role="button"],div,span,a')) {
+    if (el.children && el.children.length > 3) continue;
+    const raw = el.textContent || "";
+    if (raw.length < 5 || raw.length > 28) continue;
+    const t = raw.replace(/\s+/g, " ").trim().toUpperCase();
     if ((t === "SON 500" || t === "LAST 500" || (/^(?:SON|LAST)\s*500$/.test(t))) && t.length <= 24) {
-      son500Tab = el;
-      break;
+      if (vis(el)) {
+        son500Tab = el;
+        break;
+      }
     }
   }
 
@@ -7787,7 +7801,7 @@ DOM_SCAN = r"""
     for (let depth = 1; depth <= 12 && p; depth++, p = p.parentElement) {
       const pr = p.getBoundingClientRect();
       if (pr.width > 620) break;
-      const rawTxt = (p.innerText || p.textContent || "").replace(/\s+/g, " ").trim();
+      const rawTxt = (p.textContent || "").replace(/\s+/g, " ").trim();
       const idx = rawTxt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
       const sliced = idx >= 0 ? rawTxt.slice(idx).replace(/^(?:SON|LAST)\s*500\b/i, "") : rawTxt;
       if (/%/.test(sliced)) continue;
@@ -7807,56 +7821,41 @@ DOM_SCAN = r"""
     }
   }
 
-  // 2) Standard history/recent/result selectors.
-  // Use el.innerText (which respects display:none/visibility:hidden in Chrome).
-  // When son500Open is false (drawer is Collapsed / Küçült), cap nums to 10 so
-  // outer wrappers never overwrite positions 11..20 of SON 20!
-  const selectors = [
-    '[data-testid*="history"]',
-    '[data-testid*="result"]',
-    '[data-testid*="recent"]',
-    '[class*="history"]',
-    '[class*="History"]',
-    '[class*="recent"]',
-    '[class*="Recent"]',
-    '[class*="result"]',
-    '[class*="Result"]'
-  ];
+  // 2) Standard history/recent/result selectors (single combined query).
+  const combinedSel = '[data-testid*="history"],[data-testid*="result"],[data-testid*="recent"],[class*="history"],[class*="History"],[class*="recent"],[class*="Recent"],[class*="result"],[class*="Result"]';
 
-  for (const sel of selectors) {
-    for (const el of queryAllDeep(sel)) {
-      if (seen.has(el)) continue;
-      if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
-      if (!vis(el)) continue;
-      seen.add(el);
+  for (const el of document.querySelectorAll(combinedSel)) {
+    if (seen.has(el)) continue;
+    if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
+    if (!vis(el)) continue;
+    seen.add(el);
 
-      let txt = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-      if (!txt) continue;
-      if (/BAKIYE|BALANCE|TOPLAM\s*BAHIS|TOTAL\s*BET|VOISINS|ORPHELINS|TIERS/i.test(txt)) continue;
+    let txt = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!txt) continue;
+    if (/BAKIYE|BALANCE|TOPLAM\s*BAHIS|TOTAL\s*BET|VOISINS|ORPHELINS|TIERS/i.test(txt)) continue;
 
-      const idx500 = txt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
-      if (idx500 >= 0) {
-        txt = txt.slice(idx500).replace(/^(?:SON|LAST)\s*500\b/i, "");
-      } else if (/%|SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD|GRAF[İI]KLER/i.test(txt)) {
-        const cutIdx = txt.toUpperCase().search(/SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD|GRAF[İI]KLER|%/);
-        if (cutIdx >= 0) txt = txt.slice(0, cutIdx);
-      }
+    const idx500 = txt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
+    if (idx500 >= 0) {
+      txt = txt.slice(idx500).replace(/^(?:SON|LAST)\s*500\b/i, "");
+    } else if (/%|SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD|GRAF[İI]KLER/i.test(txt)) {
+      const cutIdx = txt.toUpperCase().search(/SICAK\s*&\s*SO[ĞG]UK|HOT\s*&\s*COLD|GRAF[İI]KLER|%/);
+      if (cutIdx >= 0) txt = txt.slice(0, cutIdx);
+    }
 
-      const nums = (txt.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || [])
-        .map(Number);
+    const nums = (txt.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || [])
+      .map(Number);
 
-      if (nums.length >= 5) {
-        if (nums.length >= 40) son500Open = true;
-        const isGrid = son500Open && nums.length >= 20;
-        const limit = isGrid ? 30 : 10;
-        out.push({
-          testid: el.getAttribute("data-testid") || "",
-          cls: el.getAttribute("class") || "",
-          collapsedBar: !isGrid,
-          son500Grid: isGrid,
-          nums: nums.slice(0, limit)
-        });
-      }
+    if (nums.length >= 5) {
+      if (nums.length >= 40) son500Open = true;
+      const isGrid = son500Open && nums.length >= 20;
+      const limit = isGrid ? 30 : 10;
+      out.push({
+        testid: el.getAttribute("data-testid") || "",
+        cls: el.getAttribute("class") || "",
+        collapsedBar: !isGrid,
+        son500Grid: isGrid,
+        nums: nums.slice(0, limit)
+      });
     }
   }
 
@@ -7937,18 +7936,22 @@ HISTORY500_SCAN = r"""
 
   function deepQueryAll(root, selector) {
     const out = [];
+    const seenNodes = new Set();
     const seenRoots = new Set();
     const pushUnique = el => {
-      if (el && !out.includes(el)) out.push(el);
+      if (el && !seenNodes.has(el)) {
+        seenNodes.add(el);
+        out.push(el);
+      }
     };
     function visit(r) {
       if (!r || seenRoots.has(r)) return;
       seenRoots.add(r);
       let nodes = [];
-      try { nodes = Array.from(r.querySelectorAll(selector)); } catch (_) { nodes = []; }
+      try { nodes = r.querySelectorAll(selector); } catch (_) { nodes = []; }
       for (const n of nodes) pushUnique(n);
       let all = [];
-      try { all = Array.from(r.querySelectorAll('*')); } catch (_) { all = []; }
+      try { all = r.querySelectorAll('*'); } catch (_) { all = []; }
       for (const el of all) {
         try { if (el.shadowRoot) visit(el.shadowRoot); } catch (_) {}
         try {
@@ -7964,10 +7967,15 @@ HISTORY500_SCAN = r"""
 
   function ownTexts(el) {
     const vals = [];
-    try { vals.push(el.innerText || ''); } catch (_) {}
-    try { vals.push(el.textContent || ''); } catch (_) {}
+    try {
+      const tc = el.textContent || '';
+      if (tc.length <= 16) vals.push(tc);
+    } catch (_) {}
     for (const a of ['aria-label','title','data-value','data-number','data-result','data-role','value']) {
-      try { vals.push(el.getAttribute(a) || ''); } catch (_) {}
+      try {
+        const v = el.getAttribute(a);
+        if (v) vals.push(v);
+      } catch (_) {}
     }
     return vals;
   }
@@ -7981,7 +7989,7 @@ HISTORY500_SCAN = r"""
   }
 
   function readableText(el) {
-    try { return el.innerText || el.textContent || ''; } catch (_) { return ''; }
+    try { return el.textContent || ''; } catch (_) { return ''; }
   }
 
   function parentOf(el) {
@@ -7999,9 +8007,11 @@ HISTORY500_SCAN = r"""
     if (!root) return recs;
     const seenEls = new Set();
     for (const el of deepQueryAll(root, "*")) {
-      if (!visibleStyle(el) || seenEls.has(el)) continue;
+      if (seenEls.has(el)) continue;
+      if (el.children && el.children.length > 3) continue;
       const n = numericValue(el);
       if (n === null || n < 0 || n > 36) continue;
+      if (!visibleStyle(el)) continue;
       let childHasSameNumeric = false;
       try {
         for (const ch of el.children || []) {
@@ -8029,24 +8039,31 @@ HISTORY500_SCAN = r"""
     'button,[role="tab"],[role="button"],div,span,a,svg'
   );
 
-  const autoButtons = all.filter(
-    el => visibleStyle(el) && /OTOMAT[İI]K\s*OYUN|AUTOMATIC\s*(PLAY|GAME)|AUTO\s*PLAY/.test(norm(readableText(el)))
-  );
-  const autoFound = autoButtons.length > 0;
-
   function findHistoryTab() {
     let found = all.find(el => {
-      const t = norm(readableText(el));
+      if (el.children && el.children.length > 3) return false;
+      const raw = readableText(el);
+      if (raw.length < 5 || raw.length > 28) return false;
+      const t = norm(raw);
       return (t === "SON 500" || t === "LAST 500") && visibleStyle(el);
     });
     if (found) return found;
     return all.find(el => {
-      const t = norm(readableText(el));
+      if (el.children && el.children.length > 3) return false;
+      const raw = readableText(el);
+      if (raw.length < 5 || raw.length > 28) return false;
+      const t = norm(raw);
       return /\b(?:SON|LAST)\s*500\b/.test(t) && t.length <= 28 && visibleStyle(el);
     });
   }
 
   let tab = findHistoryTab();
+  const autoButtons = (!tab && ALLOW_EXPAND) ? all.filter(el => {
+    const raw = readableText(el);
+    if (raw.length < 6 || raw.length > 40) return false;
+    return /OTOMAT[İI]K\s*OYUN|AUTOMATIC\s*(PLAY|GAME)|AUTO\s*PLAY/.test(norm(raw)) && visibleStyle(el);
+  }) : [];
+  const autoFound = autoButtons.length > 0;
   let expandedDrawer = false;
   // CRITICAL: Only attempt to click the drawer expand toggle when ALLOW_EXPAND
   // is true (background collector only) AND the in-game OTOMATİK OYUN button
@@ -9653,6 +9670,10 @@ class ChromeBridge(threading.Thread):
             f"--remote-debugging-port={DEBUG_PORT}",
             "--remote-allow-origins=*",
             f"--user-data-dir={profile}",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+            "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
             "--start-maximized",
         ]
         if url:
@@ -11353,8 +11374,17 @@ class ChromeBridge(threading.Thread):
 
     def enable_session(self, sid):
         try:
-            self.send("Network.enable", {}, session_id=sid)
+            self.send(
+                "Network.enable",
+                {
+                    "maxTotalBufferSize": 4_194_304,
+                    "maxResourceBufferSize": 1_048_576,
+                    "maxPostDataSize": 65_536,
+                },
+                session_id=sid,
+            )
             self.send("Runtime.enable", {}, session_id=sid)
+            self.send("Page.setWebLifecycleState", {"state": "active"}, session_id=sid)
             self.send(
                 "Target.setAutoAttach",
                 {
@@ -11832,7 +11862,7 @@ class ChromeBridge(threading.Thread):
                             continue
 
                     if self.is_direct_probe_target(sid):
-                        if now - float(last_visibility_scan.get(sid, 0.0)) >= 1.5:
+                        if now - float(last_visibility_scan.get(sid, 0.0)) >= 2.0:
                             last_visibility_scan[sid] = now
                             self.send(
                                 "Runtime.evaluate",
@@ -11846,40 +11876,43 @@ class ChromeBridge(threading.Thread):
                                 context=sid,
                             )
 
-                        # Lightweight unattended watchdog: text-only DOM scan.
-                        # No screenshots/OpenCV; negligible CPU compared with the game video.
-                        if (
-                            self.is_recovery_target(sid)
-                            and not self._is_collector_session(sid)
-                            and now - float(self.recovery_last_scan.get(sid, 0.0)) >= 1.2
-                        ):
-                            self.recovery_last_scan[sid] = now
-                            self.send(
-                                "Runtime.evaluate",
-                                {
-                                    "expression": RECOVERY_SCAN,
-                                    "returnByValue": True,
-                                    "awaitPromise": True,
-                                },
-                                session_id=sid,
-                                kind="recoveryscan",
-                                context=sid,
-                            )
-
                     if self.is_roulette_target(sid) and self._is_active_session(sid):
-                        active_ctx_ids = [None]
-                        for ctx in (self.execution_contexts.get(sid) or {}).values():
-                            cid = ctx.get("id")
-                            aux = ctx.get("auxData") or {}
-                            origin = str(ctx.get("origin") or "").lower()
-                            if cid is None or not bool(aux.get("isDefault", False)):
-                                continue
-                            if not origin.startswith(("http://", "https://")):
-                                continue
-                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
-                                continue
-                            active_ctx_ids.append(int(cid))
-                        active_ctx_ids = list(dict.fromkeys(active_ctx_ids))[:5]
+                        # When a dedicated Pragmatic game iframe target is active
+                        # (e.g. client.*/desktop/roulette), do NOT hammer the parent
+                        # casino page DOM and do NOT duplicate the default context!
+                        active_info = self.session_info.get(self.active_game_sid, {}) or {}
+                        active_url = str(active_info.get("url", "") or "").lower()
+                        has_dedicated_game_target = bool(
+                            self.active_game_sid
+                            and (
+                                "/desktop/roulette" in active_url
+                                or "client." in active_url
+                                or "games." in active_url
+                            )
+                        )
+                        if has_dedicated_game_target and sid != self.active_game_sid:
+                            active_ctx_ids = []
+                        elif has_dedicated_game_target:
+                            active_ctx_ids = [None]
+                        else:
+                            sid_url = str((self.session_info.get(sid, {}) or {}).get("url", "") or "").lower()
+                            sid_host = urllib.parse.urlsplit(sid_url).netloc.lower()
+                            active_ctx_ids = [None]
+                            for ctx in (self.execution_contexts.get(sid) or {}).values():
+                                cid = ctx.get("id")
+                                aux = ctx.get("auxData") or {}
+                                origin = str(ctx.get("origin") or "").lower()
+                                if cid is None or not bool(aux.get("isDefault", False)):
+                                    continue
+                                if not origin.startswith(("http://", "https://")):
+                                    continue
+                                ctx_host = urllib.parse.urlsplit(origin).netloc.lower()
+                                if sid_host and ctx_host == sid_host:
+                                    continue
+                                if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
+                                    continue
+                                active_ctx_ids.append(int(cid))
+                            active_ctx_ids = list(dict.fromkeys(active_ctx_ids))[:3]
 
                         for ctx_id in active_ctx_ids:
                             dom_params = {
@@ -11897,7 +11930,7 @@ class ChromeBridge(threading.Thread):
                                 context={"session": sid, "context_id": ctx_id},
                             )
 
-                        if now - float(last_500_scan.get(sid, 0.0)) >= 2.5:
+                        if active_ctx_ids and now - float(last_500_scan.get(sid, 0.0)) >= 3.5:
                             last_500_scan[sid] = now
                             # CRITICAL: On the user's active tab, ALWAYS use
                             # ACTIVE_HISTORY500_SCAN (ALLOW_EXPAND = false) so
@@ -11951,19 +11984,39 @@ class ChromeBridge(threading.Thread):
                         )
 
                     if self.is_direct_probe_target(sid) and self._is_active_session(sid):
-                        direct_ctx_ids = [None]
-                        for ctx in (self.execution_contexts.get(sid) or {}).values():
-                            cid = ctx.get("id")
-                            aux = ctx.get("auxData") or {}
-                            origin = str(ctx.get("origin") or "").lower()
-                            if cid is None or not bool(aux.get("isDefault", False)):
-                                continue
-                            if not origin.startswith(("http://", "https://")):
-                                continue
-                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
-                                continue
-                            direct_ctx_ids.append(int(cid))
-                        direct_ctx_ids = list(dict.fromkeys(direct_ctx_ids))[:5]
+                        active_info = self.session_info.get(self.active_game_sid, {}) or {}
+                        active_url = str(active_info.get("url", "") or "").lower()
+                        has_dedicated_game_target = bool(
+                            self.active_game_sid
+                            and (
+                                "/desktop/roulette" in active_url
+                                or "client." in active_url
+                                or "games." in active_url
+                            )
+                        )
+                        if has_dedicated_game_target and sid != self.active_game_sid:
+                            direct_ctx_ids = []
+                        elif has_dedicated_game_target:
+                            direct_ctx_ids = [None]
+                        else:
+                            sid_url = str((self.session_info.get(sid, {}) or {}).get("url", "") or "").lower()
+                            sid_host = urllib.parse.urlsplit(sid_url).netloc.lower()
+                            direct_ctx_ids = [None]
+                            for ctx in (self.execution_contexts.get(sid) or {}).values():
+                                cid = ctx.get("id")
+                                aux = ctx.get("auxData") or {}
+                                origin = str(ctx.get("origin") or "").lower()
+                                if cid is None or not bool(aux.get("isDefault", False)):
+                                    continue
+                                if not origin.startswith(("http://", "https://")):
+                                    continue
+                                ctx_host = urllib.parse.urlsplit(origin).netloc.lower()
+                                if sid_host and ctx_host == sid_host:
+                                    continue
+                                if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
+                                    continue
+                                direct_ctx_ids.append(int(cid))
+                            direct_ctx_ids = list(dict.fromkeys(direct_ctx_ids))[:3]
                         for ctx_id in direct_ctx_ids:
                             key = (sid, ctx_id if ctx_id is not None else "default")
                             if now - float(last_direct_scan.get(key, 0.0)) >= 5.0:
@@ -13758,23 +13811,29 @@ class ChromeBridge(threading.Thread):
                     return
 
                 # Pragmatic/table metadata responses are small JSON/text requests.
+                # NEVER call getResponseBody on video/audio/stream segments or empty-mime
+                # media requests, which would stall the WebGL video decoder.
                 low_path = low.split("?", 1)[0]
                 is_static_asset = low_path.endswith((
                     ".js", ".mjs", ".css", ".html", ".htm", ".png", ".jpg", ".jpeg",
                     ".gif", ".webp", ".svg", ".woff", ".woff2", ".ttf", ".otf",
                     ".mp3", ".mp4", ".ogg", ".wav", ".webm", ".wasm", ".ico", ".map",
+                    ".ts", ".m4s", ".fmp4", ".m3u8", ".mpd", ".aac", ".flac", ".bin", ".dat", ".pbf",
                 ))
-                if not is_static_asset and (
-                    "pragmatic" in low
-                    or "roulette" in low
-                    or "table" in low
-                    or "lobby" in low
-                    or "game" in low
-                ) and (
-                    "json" in mime
-                    or "javascript" in mime
-                    or "text" in mime
-                    or not mime
+                is_media_mime = any(
+                    m in mime for m in ("video", "audio", "image", "font", "octet-stream", "mpegurl", "dash", "mp2t", "mp4", "webm")
+                )
+                if (
+                    not is_static_asset
+                    and not is_media_mime
+                    and (
+                        "pragmatic" in low
+                        or "roulette" in low
+                        or "table" in low
+                        or "lobby" in low
+                        or "game" in low
+                    )
+                    and "json" in mime
                 ):
                     self.send(
                         "Network.getResponseBody",

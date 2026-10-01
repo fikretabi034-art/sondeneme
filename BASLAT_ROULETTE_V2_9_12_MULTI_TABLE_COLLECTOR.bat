@@ -120,6 +120,10 @@ if defined LASTURL (
         --remote-debugging-port=9222 ^
         --remote-allow-origins=* ^
         --user-data-dir="%LOCALAPPDATA%\PragmaticBlackjackChrome" ^
+        --disable-backgrounding-occluded-windows ^
+        --disable-renderer-backgrounding ^
+        --disable-background-timer-throttling ^
+        --disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling ^
         --start-maximized ^
         "%LASTURL%"
 ) else (
@@ -129,6 +133,10 @@ if defined LASTURL (
         --remote-debugging-port=9222 ^
         --remote-allow-origins=* ^
         --user-data-dir="%LOCALAPPDATA%\PragmaticBlackjackChrome" ^
+        --disable-backgrounding-occluded-windows ^
+        --disable-renderer-backgrounding ^
+        --disable-background-timer-throttling ^
+        --disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling ^
         --start-maximized
 )
 
