@@ -41,10 +41,10 @@ COLLECTOR_CARD_CLICK_SECONDS = 10.0
 TABLE_SCAN_AUTO_REFRESH_SECONDS = 600.0
 TAB_WALK_REFRESH_SECONDS = 300.0
 TAB_WALK_TABLE_TIMEOUT_SECONDS = 120.0
-TAB_WALK_TABLE_MIN_DWELL_SECONDS = 4.0
-TAB_WALK_NO_SON500_SKIP_SECONDS = 6.0
-TAB_WALK_EMPTY_SON500_SKIP_SECONDS = 12.0
-TAB_WALK_RETURN_GRACE_SECONDS = 12.0
+TAB_WALK_TABLE_MIN_DWELL_SECONDS = 0.85
+TAB_WALK_NO_SON500_SKIP_SECONDS = 16.0
+TAB_WALK_EMPTY_SON500_SKIP_SECONDS = 18.0
+TAB_WALK_RETURN_GRACE_SECONDS = 8.0
 TAB_WALK_BLOCKED_TABLE_LABELS = (
     "POWERUP", "POWER UP",
     "PRIVE LOUNGE", "PRIVÉ LOUNGE",
@@ -729,12 +729,15 @@ def multi_table_transition_expert(history, pool_newest):
         bw = float(base_web.get(n, 1.0 / 37.0) or 0.0)
         # 2-step count is scaled as a fraction (0.25) of a single 1-step observation
         # so it cleanly breaks ties (e.g. 17x vs 17x) without ever overriding a higher 1-step count.
+        eff_p = p1 + 0.25 * step_unit * pair_cnt
         if exact_obs >= 20:
-            scores[n] = p1 + 0.25 * step_unit * pair_cnt
+            # Amplify high-percentage transitions so the top ORTAK HAVUZ percentages
+            # press with clear, decisive net weight while strictly preserving their order.
+            scores[n] = (eff_p ** 1.35) if eff_p > 0.0 else 0.0
         else:
-            scores[n] = 0.92 * (p1 + 0.25 * step_unit * pair_cnt) + 0.08 * bw
+            scores[n] = 0.92 * eff_p + 0.08 * bw
 
-    return normalize_probs(scores, floor=0.0002)
+    return normalize_probs(scores, floor=0.0001)
 
 
 def expert_distributions(history, session_results, external_history=None):
@@ -2462,11 +2465,11 @@ def source_predictions(history, session_results, table500, table_long, archive, 
 def adaptive_source_weights(source_hits, active_sources):
     """Performance-weighted CANLI / SON500 / ARŞİV / WEB allocation."""
     priors = {
-        "ARCHIVE": 0.28,
-        "TABLE500": 0.25,
-        "TABLE_LONG": 0.24,
-        "LOCAL": 0.15,
-        "WEB": 0.08,
+        "ARCHIVE": 0.46,
+        "TABLE500": 0.19,
+        "TABLE_LONG": 0.19,
+        "LOCAL": 0.11,
+        "WEB": 0.05,
     }
     top5_base = 5.0 / 37.0
     exact_base = 1.0 / 37.0
@@ -2510,8 +2513,9 @@ def adaptive_source_weights(source_hits, active_sources):
     total = sum(raw.values()) or 1.0
     w = {k: v / total for k, v in raw.items()}
 
-    # Never let one source permanently dominate or disappear.
-    floor, cap = 0.07, 0.50
+    # Never let one source permanently disappear, while allowing ARCHIVE (ORTAK HAVUZ)
+    # to hold decisive weight.
+    floor, cap = 0.06, 0.64
     for _ in range(8):
         changed = False
         deficit = 0.0
@@ -3142,7 +3146,7 @@ def choose_net_number(
     if "ARCHIVE" in members:
         families = {
             "ORTAK": ("ARCHIVE",),
-            "TABLO": ("TABLE500","TABLE_LONG","MODEL_WEB"),
+            "TABLO": ("TABLE500","TABLE_LONG"),
             "AKIŞ": ("LOCAL","MODEL_RECENCY","MODEL_TRANSITION"),
             "ÇARK": ("MODEL_WHEEL",),
         }
@@ -3219,9 +3223,14 @@ def choose_net_number(
     mt_tables = int(mt_snap.get("tables", 0) or 0)
     mt_exact_obs = int(mt_snap.get("exact_obs", 0) or 0)
     mt_exact_probs = mt_snap.get("exact_probs") or {}
+    mt_top_pct = mt_snap.get("exact_top_pct") or []
+    mt_top_list = [
+        int(row[0]) for row in mt_top_pct
+        if isinstance(row, (list, tuple)) and len(row) >= 1 and isinstance(row[0], int) and 0 <= int(row[0]) <= 36
+    ]
     table_long_count = int(pred.get("table_long_count", 0) or 0)
 
-    # Modest exact-skill adaptation, plus balanced multi-table & table-archive maturity.
+    # Exact-skill adaptation + decisive multi-table pool (ORTAK HAVUZ) dominance.
     raw_fw = {
         fam:min(1.42, max(0.48, family_strength[fam]))
         for fam in family_dists
@@ -3232,28 +3241,29 @@ def choose_net_number(
     )
     maturity_gap = max(0.0, (35.0 - min(35.0, float(live_n100))) / 35.0)
     if "TABLO" in raw_fw and table_long_count >= 100:
-        tablo_boost = 1.0 + 0.09 * min(1.0, table_long_count / 500.0) + 0.10 * maturity_gap
-        raw_fw["TABLO"] = min(1.46, raw_fw["TABLO"] * tablo_boost)
+        tablo_boost = 1.0 + 0.06 * min(1.0, table_long_count / 500.0) + 0.05 * maturity_gap
+        raw_fw["TABLO"] = min(1.32, raw_fw["TABLO"] * tablo_boost)
     if "ORTAK" in raw_fw and mt_exact_obs >= 5:
         pool_boost = (
-            1.0
-            + 0.08 * min(1.0, mt_spins / 5000.0)
-            + 0.06 * min(1.0, max(0, mt_tables - 1) / 10.0)
-            + 0.06 * min(1.0, mt_exact_obs / 150.0)
-            + 0.08 * maturity_gap
+            1.22
+            + 0.24 * min(1.0, mt_spins / 4000.0)
+            + 0.18 * min(1.0, max(0, mt_tables - 1) / 10.0)
+            + 0.18 * min(1.0, mt_exact_obs / 100.0)
+            + 0.10 * maturity_gap
         )
-        raw_fw["ORTAK"] = min(1.48, raw_fw["ORTAK"] * pool_boost)
+        raw_fw["ORTAK"] = min(2.35, raw_fw["ORTAK"] * pool_boost)
     if maturity_gap > 0.0:
         if "AKIŞ" in raw_fw:
-            raw_fw["AKIŞ"] = max(0.48, raw_fw["AKIŞ"] * (1.0 - 0.10 * maturity_gap))
+            raw_fw["AKIŞ"] = max(0.42, raw_fw["AKIŞ"] * (1.0 - 0.12 * maturity_gap))
         if "ÇARK" in raw_fw:
-            raw_fw["ÇARK"] = max(0.45, raw_fw["ÇARK"] * (1.0 - 0.14 * maturity_gap))
+            raw_fw["ÇARK"] = max(0.40, raw_fw["ÇARK"] * (1.0 - 0.16 * maturity_gap))
 
     s = sum(raw_fw.values()) or 1.0
     fw = {fam:w/s for fam,w in raw_fw.items()}
 
     if len(fw) >= 2:
-        fw = {fam:min(0.48,w) for fam,w in fw.items()}
+        fam_cap = 0.68 if mt_exact_obs >= 10 else 0.52
+        fw = {fam:min(fam_cap, w) for fam,w in fw.items()}
         s2 = sum(fw.values()) or 1.0
         fw = {fam:w/s2 for fam,w in fw.items()}
 
@@ -3271,13 +3281,18 @@ def choose_net_number(
     max_mt_prob = max((float(v or 0.0) for v in mt_exact_probs.values()), default=0.0)
     ortak_dist = family_dists.get("ORTAK") or {}
     tablo_dist = family_dists.get("TABLO") or {}
-    mt_w = 0.10 + 0.12 * min(1.0, mt_exact_obs / 120.0) if mt_exact_obs >= 5 else 0.0
+    mt_w = 0.48 + 0.38 * min(1.0, mt_exact_obs / 80.0) if mt_exact_obs >= 5 else 0.0
+    mt_top5_set = set(mt_top_list[:5])
 
     for n in range(37):
         if max_comb > 1e-9:
-            total[n] += 0.15 * (float(combined.get(n, 0.0) or 0.0) / max_comb)
+            total[n] += 0.18 * (float(combined.get(n, 0.0) or 0.0) / max_comb)
         if mt_w > 0.0 and max_mt_prob > 1e-9:
-            total[n] += mt_w * (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob)
+            rel_mt = float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob
+            total[n] += mt_w * (rel_mt ** 1.35)
+            if n in mt_top5_set:
+                rank_idx = mt_top_list.index(n)
+                total[n] += (0.28 - 0.045 * rank_idx) * rel_mt
         if fam_presence[n] >= 2:
             total[n] += 0.07 * (fam_presence[n] - 1)
         # Cross-family wheel-neighbor synergy (K1/K2 pocket alignment between ORTAK and TABLO)
@@ -3287,31 +3302,29 @@ def choose_net_number(
             + float(tablo_dist.get(ln, 0.0)) + float(tablo_dist.get(rn, 0.0))
         )
         if nb_support > 0.0:
-            total[n] += 0.045 * min(1.8, nb_support)
+            total[n] += 0.035 * min(1.8, nb_support)
 
-    # Anti-echo guard: prevent the model from blindly repeating the just-landed
-    # spin (hist[0]) or previous spin (hist[1]) unless ORTAK or TABLO explicitly
-    # ranks that exact repeat in its Top 2 transitions.
+    # Anti-echo guard: prevent repeating recent spins ONLY when they are NOT
+    # backed by ORTAK HAVUZ Top 5 percentage transitions or TABLO Top 2.
     recent_hist = [
         int(x) for x in (pred.get("recent_history") or [])
         if isinstance(x, int) and 0 <= x <= 36
     ]
-    deep_top2 = set()
+    deep_top_protected = set(mt_top5_set)
     for deep_key in ("ARCHIVE", "TABLE500", "TABLE_LONG"):
         sd_deep = raw_sources.get(deep_key) or {}
         for x in (sd_deep.get("top5") or [])[:2]:
             if isinstance(x, int) and 0 <= x <= 36:
-                deep_top2.add(int(x))
+                deep_top_protected.add(int(x))
     if recent_hist:
-        for idx_r, damper in ((0, 0.55), (1, 0.68), (2, 0.78)):
+        for idx_r, damper in ((0, 0.58), (1, 0.72), (2, 0.82)):
             if idx_r < len(recent_hist):
                 r_spin = recent_hist[idx_r]
-                if r_spin not in deep_top2:
+                if r_spin not in deep_top_protected:
                     total[r_spin] *= damper
 
-    # Anti-stickiness: if a number was picked as NET 2+ times in the last 6
-    # live rounds without an exact hit, dampen it so NET does not lock on a
-    # single stale number while backups are hitting.
+    # Anti-stickiness: only dampen a stale number if it is NOT the #1/#2
+    # empirical transition in ORTAK HAVUZ.
     recent_rows = [
         r for r in (validation_history or [])[-6:]
         if isinstance(r, dict) and "predicted" in r
@@ -3329,27 +3342,49 @@ def choose_net_number(
             else:
                 miss_counts[p_num] += 1
         for p_num, m_cnt in miss_counts.items():
-            if m_cnt >= 2 and p_num not in hit_Direct and 0 <= p_num <= 36:
-                total[p_num] *= 0.76
+            if (
+                m_cnt >= 2
+                and p_num not in hit_Direct
+                and p_num not in set(mt_top_list[:2])
+                and 0 <= p_num <= 36
+            ):
+                total[p_num] *= 0.80
 
     ordered = sorted(
         range(37),
-        key=lambda n:(-total[n], -float(combined.get(n,0.0) or 0.0), n),
+        key=lambda n:(-total[n], -float(mt_exact_probs.get(n, 0.0) or 0.0), -float(combined.get(n,0.0) or 0.0), n),
     )
 
-    # Primary NET SAYI must be led by at least one active family's #1 pick
-    # so AİLE DESTEĞİ is never 0/4 and NET SİNYAL never drops artificially.
+    # Primary NET SAYI must be led by ORTAK when multi-table empirical transitions
+    # are available, or by the strongest active family leader.
     net_score = {n: float(total[n]) for n in range(37)}
     for fam, pick_n in family_picks.items():
         p_int = int(pick_n)
         if 0 <= p_int <= 36:
-            net_score[p_int] += 0.38 * float(fw.get(fam, 0.0))
+            net_score[p_int] += 0.42 * float(fw.get(fam, 0.0))
 
     family_leader_set = {
         int(pick_n) for pick_n in family_picks.values()
         if isinstance(pick_n, int) and 0 <= int(pick_n) <= 36
     }
-    if family_leader_set:
+    if mt_exact_obs >= 12 and mt_top_list:
+        mt_leader = int(mt_top_list[0])
+        family_picks["ORTAK"] = mt_leader
+        family_leader_set.add(mt_leader)
+        p_leader = float(mt_exact_probs.get(mt_leader, 0.0) or 0.0)
+        # Check if #2 in ORTAK HAVUZ has nearly identical % (within 0.25 percentage points)
+        # AND is simultaneously backed as #1 by TABLO or AKIŞ
+        chosen = mt_leader
+        if len(mt_top_list) >= 2:
+            mt_second = int(mt_top_list[1])
+            p_second = float(mt_exact_probs.get(mt_second, 0.0) or 0.0)
+            other_fam_picks = {
+                int(v) for k, v in family_picks.items()
+                if k in ("TABLO", "AKIŞ") and isinstance(v, int)
+            }
+            if (p_leader - p_second) <= 0.0025 and mt_second in other_fam_picks and net_score[mt_second] > net_score[mt_leader]:
+                chosen = mt_second
+    elif family_leader_set:
         chosen = max(
             family_leader_set,
             key=lambda n: (net_score[n], total[n], float(combined.get(n, 0.0) or 0.0), -n),
@@ -3358,10 +3393,9 @@ def choose_net_number(
         chosen = int(ordered[0])
 
     leader_total = max(1e-9, float(total[chosen]))
-    # Select the 4 backups (YEDEK-4) by combining total score, ORTAK/TABLO
-    # empirical transition probability, and uncovered K1/K2 wheel pockets so
-    # backups never cluster on 3 adjacent numbers of the same wheel sector
-    # while leaving out top ORTAK HAVUZ transitions!
+    # Select the 4 backups (YEDEK-4) by strongly prioritizing the highest-%
+    # empirical transitions in ORTAK HAVUZ (exact_top_pct) while using TABLO/AKIŞ
+    # and wheel coverage to break ties.
     top5 = [chosen]
     covered_k1 = set(wheel_neighbors(chosen, 1))
     covered_k2 = set(wheel_neighbors(chosen, 2))
@@ -3371,20 +3405,22 @@ def choose_net_number(
             nb1_set = set(wheel_neighbors(n, 1))
             uncovered = nb1_set - covered_k1
             comb_bonus = (float(combined.get(n, 0.0) or 0.0) / max_comb) * 0.14 if max_comb > 1e-9 else 0.0
-            mt_bonus = (
-                (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob) * 0.14
-                if (mt_exact_obs >= 15 and max_mt_prob > 1e-9)
-                else 0.0
-            )
+            rel_mt = (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob) if (mt_exact_obs >= 10 and max_mt_prob > 1e-9) else 0.0
+            mt_bonus = (0.62 * (rel_mt ** 1.25)) if rel_mt > 0.0 else 0.0
+            if n in mt_top5_set:
+                mt_bonus += 0.25
             rel_strength = min(1.0, float(total[n]) / max(1e-9, leader_total * 0.55))
             if max_comb > 1e-9 and uncovered:
                 uncovered_mass = sum(float(combined.get(m, 0.0) or 0.0) / max_comb for m in uncovered)
-                cov_bonus = 0.035 * rel_strength * uncovered_mass
+                cov_bonus = 0.025 * rel_strength * uncovered_mass
             else:
-                cov_bonus = 0.020 * rel_strength * len(uncovered)
-            # Penalize candidates whose center is already inside an existing pick's K2 pocket
-            # unless both ORTAK and TABLO strongly demand that exact number.
-            cluster_penalty = 0.08 if (n in covered_k2 and len(uncovered) <= 1) else 0.0
+                cov_bonus = 0.015 * rel_strength * len(uncovered)
+            # Never apply cluster_penalty to top ORTAK HAVUZ percentage transitions!
+            cluster_penalty = (
+                0.06
+                if (n not in mt_top5_set and n in covered_k2 and len(uncovered) <= 1)
+                else 0.0
+            )
             return (
                 total[n] + comb_bonus + mt_bonus + cov_bonus - cluster_penalty,
                 float(mt_exact_probs.get(n, 0.0) or 0.0),
@@ -6781,10 +6817,10 @@ class RouletteState:
             spins_total = int(pool_snap.get("spins", 0) or 0)
             tables_total = int(pool_snap.get("tables", 0) or 0)
             mt_alpha = min(
-                0.32,
-                0.12
-                + 0.12 * min(1.0, spins_total / 5000.0)
-                + 0.08 * min(1.0, max(0, tables_total - 1) / 15.0),
+                0.68,
+                0.34
+                + 0.22 * min(1.0, spins_total / 4000.0)
+                + 0.12 * min(1.0, max(0, tables_total - 1) / 10.0),
             )
             base_comb = pred.get("combined") or {n: 1.0 / 37.0 for n in range(37)}
             merged_comb = {
@@ -8349,6 +8385,7 @@ HISTORY500_SCAN = r"""
     autoFound,
     lobbyLike,
     lobbyCardCount,
+    activeGameUi,
     blockedTable,
     hotColdOnly,
     gameNoSon500,
@@ -8856,8 +8893,12 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       .split(/[\r\n]+/)
       .map(s => norm(s))
       .filter(Boolean);
-    for (const ln of lines) {{
+    for (let idx = 0; idx < lines.length; idx++) {{
+      let ln = lines[idx];
       if (!/(ROULETTE|RULET)/.test(ln)) continue;
+      if (idx + 1 < lines.length && /^(?:[0-9]{{1,3}}|VIP|AZURE|RUBY|MACAO|ITALIANA|THE\s*CLUB)$/.test(lines[idx + 1])) {{
+        ln = (ln + ' ' + lines[idx + 1]).trim();
+      }}
       let cleaned = ln
         .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
         .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
@@ -8872,6 +8913,19 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     const m = full.match(/([A-Z0-9 ._-]{{0,32}}(?:ROULETTE|RULET)[A-Z0-9 ._-]{{0,32}})/);
     if (m && m[1].trim().length >= 4) return m[1].trim().slice(0, 120);
     return full.slice(0, 120);
+  }}
+
+  function cardImageSignature(tile) {{
+    if (!tile || !tile.querySelector) return '';
+    try {{
+      const img = tile.querySelector('img[src]');
+      if (img && img.src) {{
+        const u = new URL(img.src, location.href);
+        const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+        if (seg) return seg.toUpperCase().slice(0, 64);
+      }}
+    }} catch (_) {{}}
+    return '';
   }}
 
   function clickCardThumbnail(tile) {{
@@ -8896,21 +8950,33 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       return false;
     }};
 
-    let hit = clickable(tile);
-    if (!hit || isHeartEl(hit)) hit = tile;
+    let innerHit = null;
     try {{
-      hit.scrollIntoView({{block: 'center', inline: 'center'}});
+      const innerCandidates = Array.from(tile.querySelectorAll('a,button,[role="button"],img,div')).filter(el => visible(el) && !isHeartEl(el));
+      innerHit = innerCandidates.find(el => {{
+        const r = el.getBoundingClientRect();
+        const tr = tile.getBoundingClientRect();
+        return r.width >= tr.width * 0.45 && r.height >= tr.height * 0.35;
+      }}) || null;
     }} catch (_) {{}}
+    let hit = innerHit || tile;
+    if (isHeartEl(hit)) hit = tile;
     try {{
-      const r = hit.getBoundingClientRect();
+      const r = tile.getBoundingClientRect();
       const cx = Math.round(r.left + r.width * 0.48);
       const cy = Math.round(r.top + r.height * 0.36);
-      for (const evType of ['mouseover','mouseenter','mousemove']) {{
-        hit.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
+      for (const target of [hit, tile]) {{
+        if (!target) continue;
+        for (const evType of ['pointerover','mouseover','mouseenter','mousemove','pointerdown','mousedown','pointerup','mouseup']) {{
+          target.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
+        }}
       }}
     }} catch (_) {{}}
     try {{
       hit.click();
+      if (hit !== tile) {{
+        try {{ tile.click(); }} catch (_) {{}}
+      }}
       return true;
     }} catch (_) {{
       try {{ tile.click(); return true; }} catch (__) {{ return false; }}
@@ -8957,7 +9023,8 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }}
 
     if (!cleanTitle && (gameId || tableId)) cleanTitle = 'ROULETTE ' + (gameId || tableId);
-    const key = (tableId || cleanTitle).slice(0, 180);
+    const imgSig = cardImageSignature(tile);
+    const key = (tableId || gameId || (cleanTitle + (imgSig ? '|' + imgSig : ''))).slice(0, 200);
     if (!key) continue;
     seenTiles.add(tile);
     seenBoxes.push(rect);
@@ -9009,7 +9076,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
 
   if (!scanState.clickedKeys) scanState.clickedKeys = {{}};
   const nowMs = Date.now();
-  const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 1200;
+  const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 480;
 
   // If the "Masa dolu" (Table full) modal from a VIP/Privé table is open on screen,
   // dismiss it by clicking "Tamam" / "OK" and skip that card without stopping the scan.
@@ -9033,13 +9100,16 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }};
   }}
 
+  const unclickedCards = cardHits.filter(c => !PY_CLICKED_KEYS.has(c.key));
+
   // If Korece Rulet (Korean Roulette) at the end of the lobby has already been
-  // clicked and collected, stop the lobby scan right at Korece Rulet!
+  // clicked and collected AND there are no remaining unclicked cards in the row,
+  // stop the lobby scan right at Korece Rulet!
   const koreceDone = cardHits.some(c =>
     /\bKORECE\s*RULET\b|\bKOREAN\s*ROULETTE\b|\bKORE\s*RULET\b/.test(norm(c.label)) &&
     PY_CLICKED_KEYS.has(c.key)
   );
-  if (koreceDone) {{
+  if (koreceDone && unclickedCards.length === 0) {{
     return {{
       ok: true,
       mode: 'korece_rulet_stop',
@@ -9051,9 +9121,55 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }};
   }}
 
-  const unclickedCards = cardHits.filter(c => !PY_CLICKED_KEYS.has(c.key));
+  const scrollCandidates=[];
+  const root=document.scrollingElement;
+  if (root && root.scrollHeight>root.clientHeight+12) scrollCandidates.push(root);
+  for (const el of Array.from(document.querySelectorAll('*')).slice(0,2500)) {{
+    if (el===root) continue;
+    const style=getComputedStyle(el);
+    const r=el.getBoundingClientRect();
+    if ((style.overflowY==='auto' || style.overflowY==='scroll')
+        && el.scrollHeight>el.clientHeight+12 && r.width>120 && r.height>100) {{
+      scrollCandidates.push(el);
+    }}
+  }}
+  const scrollTarget=scrollCandidates.sort((a,b)=>
+    (b.clientHeight*Math.min(b.scrollHeight,8000))
+    -(a.clientHeight*Math.min(a.scrollHeight,8000))
+  )[0] || null;
+  let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=false;
+  if (scrollTarget) {{
+    scrollTop=scrollTarget.scrollTop;
+    scrollHeight=scrollTarget.scrollHeight;
+    clientHeight=scrollTarget.clientHeight;
+    atBottom=(scrollHeight > clientHeight + 40) && (scrollTop + clientHeight >= scrollHeight - 12);
+    if (atBottom) scanState.atBottomSeen = true;
+  }}
+
   const next = unclickedCards[0] || null;
-  if (PY_CLICK_CARDS && next && clickReady && (nowMs - Number(scanState.clickedKeys[next.key] || 0)) >= 3500) {{
+  if (PY_CLICK_CARDS && next && clickReady && (nowMs - Number(scanState.clickedKeys[next.key] || 0)) >= 2000) {{
+    // If the next card is partially cut off near the bottom/top edge of the viewport,
+    // scroll it cleanly into view first so clicking never misses!
+    const inViewport = next.rect.top >= 16 && next.rect.bottom <= (window.innerHeight - 10);
+    if (!inViewport && scrollTarget && !atBottom && next.rect.bottom > (window.innerHeight - 10)) {{
+      scrollTarget.scrollBy({{
+        top: Math.max(180, Math.round(next.rect.top - window.innerHeight * 0.25)),
+        behavior: 'instant'
+      }});
+      return {{
+        ok: true,
+        mode: 'provider_lobby',
+        stage: 'scrolling-card-into-view',
+        cards,
+        scrollTop: scrollTarget.scrollTop,
+        scrollHeight,
+        clientHeight,
+        atBottom: (scrollHeight > clientHeight + 40) && (scrollTarget.scrollTop + clientHeight >= scrollHeight - 12),
+        atBottomSeen: !!scanState.atBottomSeen,
+        bodyLength: bodyText.length,
+        title, url: href
+      }};
+    }}
     scanState.clickedKeys[next.key] = nowMs;
     scanState.lastCardClickAt = nowMs;
     try {{
@@ -9082,35 +9198,8 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }}
   }}
 
-  const scrollCandidates=[];
-  const root=document.scrollingElement;
-  if (root && root.scrollHeight>root.clientHeight+12) scrollCandidates.push(root);
-  for (const el of Array.from(document.querySelectorAll('*')).slice(0,2500)) {{
-    if (el===root) continue;
-    const style=getComputedStyle(el);
-    const r=el.getBoundingClientRect();
-    if ((style.overflowY==='auto' || style.overflowY==='scroll')
-        && el.scrollHeight>el.clientHeight+12 && r.width>120 && r.height>100) {{
-      scrollCandidates.push(el);
-    }}
-  }}
-  const scrollTarget=scrollCandidates.sort((a,b)=>
-    (b.clientHeight*Math.min(b.scrollHeight,8000))
-    -(a.clientHeight*Math.min(a.scrollHeight,8000))
-  )[0] || null;
-  let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=false;
-  if (scrollTarget) {{
-    scrollTop=scrollTarget.scrollTop;
-    scrollHeight=scrollTarget.scrollHeight;
-    clientHeight=scrollTarget.clientHeight;
-    atBottom=(scrollHeight > clientHeight + 40) && (scrollTop + clientHeight >= scrollHeight - 12);
-    if (atBottom) scanState.atBottomSeen = true;
-    // CRITICAL: Only scroll down when cards have rendered (cards.length > 0) AND
-    // EVERY visible card in the current rows has already been clicked (unclickedCards.length === 0)!
-    // Never scroll while unclicked cards are still on screen!
-    if (!atBottom && cards.length > 0 && unclickedCards.length === 0 && clickReady) {{
-      scrollTarget.scrollBy({{top:Math.max(220,Math.floor(clientHeight*0.48)),behavior:'instant'}});
-    }}
+  if (scrollTarget && !atBottom && cards.length > 0 && unclickedCards.length === 0 && clickReady) {{
+    scrollTarget.scrollBy({{top:Math.max(240,Math.floor(clientHeight*0.52)),behavior:'instant'}});
   }}
 
   return {{
@@ -10742,9 +10831,9 @@ class ChromeBridge(threading.Thread):
         digest = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:12]
         return f"collector_{digest}", (label or f"Roulette {digest}")
 
-    def _schedule_collector_return(self, sid, delay=0.8):
+    def _schedule_collector_return(self, sid, delay=0.25):
         now = time.time()
-        delay = float(delay or 0.8)
+        delay = float(delay or 0.25)
         sid = str(sid or "")
         if self.table_scan_tab_walk:
             started = 0.0
@@ -10759,7 +10848,7 @@ class ChromeBridge(threading.Thread):
             if started:
                 delay = max(
                     delay,
-                    max(0.8, TAB_WALK_TABLE_MIN_DWELL_SECONDS - (now - started)),
+                    max(0.22, TAB_WALK_TABLE_MIN_DWELL_SECONDS - (now - started)),
                 )
         due = now + delay
         if sid:
@@ -11505,7 +11594,7 @@ class ChromeBridge(threading.Thread):
                     self.table_scan_click_attempts = attempts_map
                 attempts = int(attempts_map.get(clicked_key, 0) or 0) + 1
                 attempts_map[clicked_key] = attempts
-                if attempts >= 2:
+                if attempts >= 3:
                     self.table_scan_clicked_keys.add(clicked_key)
             if self._is_korece_table(label=clicked_label):
                 self.table_scan_stop_after_current = True
@@ -11553,7 +11642,7 @@ class ChromeBridge(threading.Thread):
             last_click_age = now - float(getattr(self, "table_scan_last_card_click_ts", 0.0) or 0.0)
             if returning_to_lobby:
                 self.table_scan_returning_until = 0.0
-                self.table_scan_lobby_settle_until = now + 0.9
+                self.table_scan_lobby_settle_until = now + 0.32
                 for scan_sid in list(self.session_info.keys()):
                     if self._is_collector_session(scan_sid):
                         self.table_scan_click_deadlines.pop(scan_sid, None)
@@ -11561,7 +11650,7 @@ class ChromeBridge(threading.Thread):
                         self.session_table_activity.pop(scan_sid, None)
                 self.table_scan_current_click_key = ""
                 self.table_scan_current_click_label = ""
-            elif self.table_scan_click_deadlines and last_click_age >= 5.5:
+            elif self.table_scan_click_deadlines and last_click_age >= 2.4:
                 for scan_sid in list(self.session_info.keys()):
                     if self._is_collector_session(scan_sid):
                         self.table_scan_click_deadlines.pop(scan_sid, None)
@@ -12456,7 +12545,7 @@ class ChromeBridge(threading.Thread):
                             )
                             if self.table_scan_tab_walk and history_active and not returning_to_lobby:
                                 hist_key = (sid, context_id, "collector_history500")
-                                if now - float(last_500_scan.get(hist_key, 0.0)) >= 1.4:
+                                if now - float(last_500_scan.get(hist_key, 0.0)) >= 0.65:
                                     last_500_scan[hist_key] = now
                                     hist_params = {
                                         "expression": HISTORY500_SCAN,
@@ -12487,7 +12576,7 @@ class ChromeBridge(threading.Thread):
                                 continue
 
                             scan_key = (sid, context_id)
-                            if now - float(last_table_nav_scan.get(scan_key, 0.0)) < (0.8 if self.table_scan_tab_walk else 2.0):
+                            if now - float(last_table_nav_scan.get(scan_key, 0.0)) < (0.38 if self.table_scan_tab_walk else 1.5):
                                 continue
                             settle_until = float(getattr(self, "table_scan_lobby_settle_until", 0.0) or 0.0)
                             can_click_cards = bool(
@@ -12525,7 +12614,7 @@ class ChromeBridge(threading.Thread):
             except Exception:
                 pass
 
-            time.sleep(0.5)
+            time.sleep(0.25 if self.table_scan_enabled else 0.5)
 
 
 
@@ -13125,7 +13214,7 @@ class ChromeBridge(threading.Thread):
                     )
                     self.state.mark_table_attempt(table_id, ok=True)
                     now_done = time.time()
-                    self._schedule_collector_return(sid_ctx, 0.8)
+                    self._schedule_collector_return(sid_ctx, 0.25)
                     probe_tid = self._target_id_for_session(sid_ctx)
                     if probe_tid in self.table_scan_probe_targets:
                         row = self.table_scan_probe_targets[probe_tid]
@@ -13215,7 +13304,7 @@ class ChromeBridge(threading.Thread):
                         )
                         self.state.mark_table_attempt(table_id, ok=True)
                         now_done = time.time()
-                        self._schedule_collector_return(sid_ctx, 0.8)
+                        self._schedule_collector_return(sid_ctx, 0.25)
                         probe_tid = self._target_id_for_session(sid_ctx)
                         if probe_tid in self.table_scan_probe_targets:
                             row = self.table_scan_probe_targets[probe_tid]
@@ -13776,10 +13865,10 @@ class ChromeBridge(threading.Thread):
                         if (
                             is_collector
                             and bool(value.get("lobbyLike"))
-                            and (returning_to_lobby or not wait_started_at or (now_value - wait_started_at) >= 6.5)
+                            and (returning_to_lobby or not wait_started_at or (now_value - wait_started_at) >= 2.4)
                         ):
                             if returning_to_lobby:
-                                self.table_scan_lobby_settle_until = time.time() + 1.0
+                                self.table_scan_lobby_settle_until = time.time() + 0.32
                             self.table_scan_returning_until = 0.0
                             self.table_scan_lobby_seen_at = time.time()
                             for scan_sid in list(self.session_info.keys()):
@@ -13829,7 +13918,7 @@ class ChromeBridge(threading.Thread):
                                 sid_ctx = str(meta.get("session") or "")
                                 now_done = time.time()
                                 if sid_ctx:
-                                    self._schedule_collector_return(sid_ctx, 0.8)
+                                    self._schedule_collector_return(sid_ctx, 0.25)
                                 key = str(self.table_scan_current_click_key or table_id)
                                 self.table_scan_probe_done.add(key)
                                 self.table_scan_probe_success.add(key)
@@ -13850,9 +13939,14 @@ class ChromeBridge(threading.Thread):
                                         pass
                             elapsed = max(0.0, now_wait - started) if started else 0.0
                             has_son500_tab = bool(value.get("foundTab") or str(value.get("source") or "") == "son500-tab")
-                            skip_no_panel = elapsed >= TAB_WALK_NO_SON500_SKIP_SECONDS and not has_son500_tab
+                            active_game_ui = bool(value.get("activeGameUi"))
+                            skip_no_panel = elapsed >= TAB_WALK_NO_SON500_SKIP_SECONDS and active_game_ui and not has_son500_tab
                             skip_empty_panel = elapsed >= TAB_WALK_EMPTY_SON500_SKIP_SECONDS and has_son500_tab and len(nums) < 40
                             if skip_no_panel or skip_empty_panel:
+                                self._mark_current_scan_card_done(
+                                    table_id=table_id,
+                                    label=display_name,
+                                )
                                 key = str(self.table_scan_current_click_key or table_id)
                                 self.table_scan_probe_done.add(key)
                                 self.table_scan_probe_skip.add(key)
@@ -17116,6 +17210,19 @@ def self_test():
     sc_mt = source_consensus([1, 7, 22], [22, 7, 1], pool_20_tables[:500], pool_20_tables[:500], pool_20_tables, [])
     assert "ARCHIVE" in sc_mt["sources"]
     assert sc_mt["sources"]["ARCHIVE"]["top1"] == 14
+
+    net_mt = choose_net_number({
+        "predicted": 25,
+        "combined": mt_dist,
+        "experts": expert_distributions([1, 7, 22], [22, 7, 1], pool_20_tables[:500]),
+        "source_consensus": sc_mt,
+        "multi_table_transition": snap_mt,
+        "table_long_count": 500,
+        "recent_history": [1, 7, 22],
+    })
+    assert net_mt["number"] == 14
+    assert net_mt["leader_family"] == "ORTAK"
+    assert 14 in net_mt["top5"] and 25 in net_mt["top5"]
 
     # Lobby exit guard assertions:
     assert "lobbyLike: true" in DOM_SCAN
