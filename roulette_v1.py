@@ -4262,8 +4262,9 @@ def safe_lobby_entry_url(url):
 
 def safe_last_page_url(url):
     """
-    Keep the exact last visited user page (including searchTerm, openGames,
-    gameNames, and current route) while stripping only one-time auth/session tokens.
+    Keep the exact last visited user page while stripping one-time auth/session
+    tokens and normalizing broken non-lobby openGames deep-links (such as
+    555575059-real Gates of Olympus Roulette) back to Pragmatic Play Lobby.
     """
     try:
         raw = str(url or "").strip()
@@ -4282,6 +4283,15 @@ def safe_last_page_url(url):
             if str(k).lower() not in drop
         ]
         path = u.path or "/"
+        qdict = {str(k).lower(): str(v) for k, v in cleaned}
+        if "/live-casino" in path.lower() and "opengames" in qdict:
+            og = qdict.get("opengames", "").strip()
+            if og and og != "3300922-real":
+                cleaned = [
+                    ("searchTerm", "pragmatic"),
+                    ("openGames", "3300922-real"),
+                    ("gameNames", "Pragmatic Play Lobby"),
+                ]
         return urllib.parse.urlunsplit((
             u.scheme, u.netloc, path,
             urllib.parse.urlencode(cleaned, doseq=True), u.fragment or ""
@@ -11480,17 +11490,8 @@ class ChromeBridge(threading.Thread):
 
     def enable_session(self, sid):
         try:
-            self.send(
-                "Network.enable",
-                {
-                    "maxTotalBufferSize": 4_194_304,
-                    "maxResourceBufferSize": 1_048_576,
-                    "maxPostDataSize": 65_536,
-                },
-                session_id=sid,
-            )
+            self.send("Network.enable", {}, session_id=sid)
             self.send("Runtime.enable", {}, session_id=sid)
-            self.send("Page.setWebLifecycleState", {"state": "active"}, session_id=sid)
             self.send(
                 "Target.setAutoAttach",
                 {
@@ -11501,6 +11502,22 @@ class ChromeBridge(threading.Thread):
                 session_id=sid
             )
             if not getattr(self, "_startup_url_restored", False):
+                info = self.session_info.get(sid, {}) or {}
+                raw_cur_url = str(info.get("url", "") or "").strip()
+                cur_url = raw_cur_url.lower()
+                if (
+                    str(info.get("type", "") or "").lower() == "page"
+                    and "/live-casino" in cur_url
+                    and "opengames=" in cur_url
+                    and "3300922-real" not in cur_url
+                ):
+                    healed_url = safe_last_page_url(raw_cur_url)
+                    if healed_url and healed_url != raw_cur_url:
+                        self._startup_url_restored = True
+                        self.save_roulette_url({"type": "page", "url": healed_url, "title": "Pragmatic Play Lobby"})
+                        self.send("Page.navigate", {"url": healed_url}, session_id=sid)
+                        return
+
                 has_web_page = any(
                     str(ti.get("type", "") or "").lower() == "page"
                     and str(ti.get("url", "") or "").startswith(("http://", "https://"))
@@ -11509,8 +11526,6 @@ class ChromeBridge(threading.Thread):
                 if has_web_page:
                     self._startup_url_restored = True
                 else:
-                    info = self.session_info.get(sid, {}) or {}
-                    cur_url = str(info.get("url", "") or "").strip().lower()
                     if (
                         str(info.get("type", "") or "").lower() == "page"
                         and not cur_url.startswith(("http://", "https://", "devtools://", "chrome-extension://"))

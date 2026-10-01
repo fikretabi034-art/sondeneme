@@ -27,7 +27,7 @@ def good(url):
 
 
 def stable_entry(url):
-    """Keep the exact last visited user URL while stripping only one-time session tokens."""
+    """Keep the exact last visited user URL while stripping one-time session tokens and fixing broken openGames IDs."""
     u = str(url or "").strip()
     if not good(u):
         return ""
@@ -40,6 +40,15 @@ def stable_entry(url):
         }
         qs = [(k, v) for k, v in qs if str(k).lower() not in drop]
         path = x.path or "/"
+        qdict = {str(k).lower(): str(v) for k, v in qs}
+        if "/live-casino" in path.lower() and "opengames" in qdict:
+            og = qdict.get("opengames", "").strip()
+            if og and og != "3300922-real":
+                qs = [
+                    ("searchTerm", "pragmatic"),
+                    ("openGames", "3300922-real"),
+                    ("gameNames", "Pragmatic Play Lobby"),
+                ]
         return urllib.parse.urlunsplit((
             x.scheme, x.netloc, path,
             urllib.parse.urlencode(qs, doseq=True), x.fragment or ""
