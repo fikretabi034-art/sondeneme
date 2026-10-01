@@ -3358,28 +3358,44 @@ def choose_net_number(
         chosen = int(ordered[0])
 
     leader_total = max(1e-9, float(total[chosen]))
-    # Select the 4 backups (YEDEK-4) by combining total score, walk-forward/pool
-    # combined probability, and uncovered K1 wheel-pocket probability mass so
-    # strong ORTAK/TABLO transitions populate YEDEK-4 and K1/K2 packages.
+    # Select the 4 backups (YEDEK-4) by combining total score, ORTAK/TABLO
+    # empirical transition probability, and uncovered K1/K2 wheel pockets so
+    # backups never cluster on 3 adjacent numbers of the same wheel sector
+    # while leaving out top ORTAK HAVUZ transitions!
     top5 = [chosen]
     covered_k1 = set(wheel_neighbors(chosen, 1))
+    covered_k2 = set(wheel_neighbors(chosen, 2))
     remaining = [int(n) for n in ordered if int(n) != chosen]
     while len(top5) < 5 and remaining:
         def _backup_key(n):
             nb1_set = set(wheel_neighbors(n, 1))
             uncovered = nb1_set - covered_k1
-            comb_bonus = (float(combined.get(n, 0.0) or 0.0) / max_comb) * 0.12 if max_comb > 1e-9 else 0.0
+            comb_bonus = (float(combined.get(n, 0.0) or 0.0) / max_comb) * 0.14 if max_comb > 1e-9 else 0.0
+            mt_bonus = (
+                (float(mt_exact_probs.get(n, 0.0) or 0.0) / max_mt_prob) * 0.14
+                if (mt_exact_obs >= 15 and max_mt_prob > 1e-9)
+                else 0.0
+            )
             rel_strength = min(1.0, float(total[n]) / max(1e-9, leader_total * 0.55))
             if max_comb > 1e-9 and uncovered:
                 uncovered_mass = sum(float(combined.get(m, 0.0) or 0.0) / max_comb for m in uncovered)
-                cov_bonus = 0.022 * rel_strength * uncovered_mass
+                cov_bonus = 0.035 * rel_strength * uncovered_mass
             else:
-                cov_bonus = 0.015 * rel_strength * len(uncovered)
-            return (total[n] + comb_bonus + cov_bonus, float(combined.get(n, 0.0) or 0.0), -n)
+                cov_bonus = 0.020 * rel_strength * len(uncovered)
+            # Penalize candidates whose center is already inside an existing pick's K2 pocket
+            # unless both ORTAK and TABLO strongly demand that exact number.
+            cluster_penalty = 0.08 if (n in covered_k2 and len(uncovered) <= 1) else 0.0
+            return (
+                total[n] + comb_bonus + mt_bonus + cov_bonus - cluster_penalty,
+                float(mt_exact_probs.get(n, 0.0) or 0.0),
+                float(combined.get(n, 0.0) or 0.0),
+                -n,
+            )
 
         best_b = max(remaining, key=_backup_key)
         top5.append(int(best_b))
         covered_k1.update(wheel_neighbors(best_b, 1))
+        covered_k2.update(wheel_neighbors(best_b, 2))
         remaining.remove(best_b)
 
     family_supporters = [
@@ -5341,9 +5357,6 @@ class RouletteState:
         key_mtime = {}
         key_is_long = {}
         for fpath, (mtime, tkey, seq) in self._pool_disk_cache.items():
-            # Skip synthetic collector_ fallback keys if we already have real tables
-            if tkey.startswith("pragmatic_collector_"):
-                continue
             if len(seq) < 40:
                 continue
             is_long_file = os.path.basename(fpath).startswith("table_long_archive_")
@@ -5360,8 +5373,6 @@ class RouletteState:
                 key_is_long[tkey] = is_long_file
 
         for tkey, seq in (getattr(self, "_pool_memory_tables", {}) or {}).items():
-            if tkey.startswith("pragmatic_collector_"):
-                continue
             if len(seq) >= 40:
                 prev = by_key.get(tkey)
                 if prev is None or len(seq) >= len(prev):
@@ -5880,19 +5891,32 @@ class RouletteState:
 
         dirty_long = False
         if not long_hist or (len(long_hist) < 500 and len(clean) > len(long_hist)):
-            # Full SON 500 backfill when archive was empty or had fewer than 500 spins
-            added_front = detect_new_front_large(long_hist[:500], clean, max_new=500) if long_hist else []
-            merged = list(added_front) + list(long_hist) if added_front else list(clean)
-            if len(clean) > len(merged):
+            # Full SON 500 backfill when archive was empty or had fewer than 500 spins:
+            # replace a partial 483-spin DOM capture cleanly with the 500-spin API capture
+            # instead of concatenating 483 + 500 into 983 spins!
+            added_front = detect_new_front_large(long_hist[:500], clean, max_new=120) if long_hist else []
+            if added_front and len(added_front) <= 120:
+                merged = list(added_front) + list(long_hist)
+            else:
                 merged = list(clean)
             long_hist = sanitize_long_archive(merged)
-            added = list(long_hist)
+            added = list(added_front) if added_front else list(long_hist)
+            dirty_long = True
+        elif len(long_hist) > 550 and len(clean) >= 480:
+            # Auto-repair archives that were previously doubled (~984 spins = 484 DOM + 500 API)
+            added_front = detect_new_front_large(long_hist[:500], clean, max_new=60)
+            if added_front and len(added_front) <= 60:
+                long_hist = sanitize_long_archive(list(added_front) + list(clean))
+                added = list(added_front)
+            else:
+                long_hist = sanitize_long_archive(list(clean))
+                added = []
             dirty_long = True
         else:
             added = detect_new_front_large(
                 long_hist[:500],
                 clean,
-                max_new=500,
+                max_new=120,
             )
             if added:
                 long_hist = sanitize_long_archive(list(added) + list(long_hist))
@@ -6110,6 +6134,19 @@ class RouletteState:
                 max_new=500,
             )
 
+            # If authoritative PRAGMATIC statisticHistory (500/500) is already
+            # loaded for this table, never let a shorter/unaligned DOM SON 500
+            # coordinate scan overwrite 500/500 with 483/500 or double the archive!
+            if (
+                not table_changed
+                and str(source_label or "") == "SON 500"
+                and len(self.table_history_500) >= 490
+                and len(clean) < len(self.table_history_500)
+                and not verified_live_new
+                and not new_front
+            ):
+                return
+
             dirty_long = False
             # First capture: seed long archive with all visible SON500 only if
             # no long archive exists yet. Later captures add only new results.
@@ -6119,20 +6156,20 @@ class RouletteState:
                 dirty_long = True
             else:
                 added = list(new_front)
-                if added:
+                if added and len(added) <= 120:
                     self.table_long_history = sanitize_long_archive(
                         added + self.table_long_history
                     )
                     dirty_long = True
-                elif len(clean) >= 100 and clean[:20] != self.table_long_history[:20]:
-                    prev_long_len = len(self.table_long_history)
-                    merged_long = sanitize_long_archive(
-                        list(clean) + list(self.table_long_history)
-                    )
-                    if merged_long != self.table_long_history:
-                        self.table_long_history = merged_long
-                        dirty_long = True
-                added_count = len(added)
+                elif (
+                    "statisticHistory" in str(source_label or "")
+                    and len(clean) >= 490
+                    and len(self.table_long_history) > 550
+                ):
+                    # Repair previously doubled (483 DOM + 500 API = ~983) archive
+                    self.table_long_history = sanitize_long_archive(clean)
+                    dirty_long = True
+                added_count = len(added) if len(added) <= 120 else 0
 
             had_500_before = len(self.table_history_500) >= 20
             dirty_500 = clean != previous_500
@@ -6707,19 +6744,20 @@ class RouletteState:
             list(self.table_history_500[:500]) + list(self.table_long_history)
         )
 
-        # Enrich local chronological history during early rounds on a table
-        # so LOCAL and MODEL_TRANSITION have 200+ real same-table spins immediately.
-        if len(self.session_results) < 220 and len(self.table_history_500) >= 40:
-            recent_nf = list(reversed(self.session_results[-60:])) if self.session_results else list(hist[:20])
+        # Keep AKIŞ (LOCAL + MODEL_TRANSITION + MODEL_RECENCY) genuinely focused on
+        # the short-term live momentum (last ~42 spins) rather than cloning
+        # 260 spins of table_history_500 (which made AKIŞ a duplicate of TABLO!).
+        if len(self.session_results) < 42 and len(self.table_history_500) >= 20:
+            recent_nf = list(reversed(self.session_results[-30:])) if self.session_results else list(hist[:20])
             new_front_local = detect_new_front_large(
-                self.table_history_500[:120],
+                self.table_history_500[:60],
                 recent_nf,
-                max_new=60,
+                max_new=30,
             )
-            merged_local_nf = (list(new_front_local) + list(self.table_history_500[:260]))[:260]
+            merged_local_nf = (list(new_front_local) + list(self.table_history_500[:42]))[:42]
             local_seq = list(reversed(merged_local_nf))
         else:
-            local_seq = self.session_results
+            local_seq = list(self.session_results[-60:])
 
         pred = combined_prediction(
             hist,
@@ -8152,23 +8190,24 @@ HISTORY500_SCAN = r"""
     for (let depth = 0; depth < 12 && r; depth++, r = parentOf(r)) {
       const rr = r.getBoundingClientRect();
       if (rr.width > 620) break;
-      let nums = sortedNumericLeaves(r, tr.bottom - 4);
+      let nums = [];
+      const rawTxt = (readableText(r) || "").replace(/\s+/g, " ").trim();
+      const idx = rawTxt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
+      const sliced = idx >= 0 ? rawTxt.slice(idx).replace(/^(?:SON|LAST)\s*500\b/i, "") : rawTxt;
+      if (!/%/.test(sliced)) {
+        nums = (sliced.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || []).map(Number);
+      }
       if (nums.length < 40) {
-        const rawTxt = (readableText(r) || "").replace(/\s+/g, " ").trim();
-        const idx = rawTxt.toUpperCase().search(/\b(?:SON|LAST)\s*500\b/);
-        const sliced = idx >= 0 ? rawTxt.slice(idx).replace(/^(?:SON|LAST)\s*500\b/i, "") : rawTxt;
-        if (!/%/.test(sliced)) {
-          nums = (sliced.match(/\b(?:[0-9]|[12][0-9]|3[0-6])\b/g) || []).map(Number);
-        }
+        nums = sortedNumericLeaves(r, tr.bottom - 4);
       }
       if (nums.length >= 40 && nums.length <= 650) {
         roots.push({
           root: r,
-          nums,
-          count: nums.length,
+          nums: nums.slice(0, 500),
+          count: Math.min(500, nums.length),
           depth,
           source: 'son500-tab',
-          score: nums.length * 3 + 250 - depth * 4
+          score: Math.min(500, nums.length) * 3 + 250 - depth * 4
         });
       }
     }
