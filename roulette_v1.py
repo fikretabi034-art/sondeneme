@@ -48,6 +48,8 @@ TAB_WALK_RETURN_GRACE_SECONDS = 12.0
 TAB_WALK_BLOCKED_TABLE_LABELS = (
     "POWERUP RULET", "POWERUP ROULETTE", "POWERUP ROULET",
     "POWER UP RULET", "POWER UP ROULETTE", "POWER UP ROULET",
+    "PRIVE LOUNGE RULET DELUXE", "PRIVÉ LOUNGE RULET DELUXE",
+    "PRIVE LOUNGE ROULETTE DELUXE", "PRIVÉ LOUNGE ROULETTE DELUXE",
 )
 DGA_FEED_WS_URL = "wss://dga.pragmaticplaylive.net/ws"
 DGA_DEFAULT_CASINO_ID = "ppcds00000003709"
@@ -5441,9 +5443,10 @@ class RouletteState:
             }
 
         # Keep MASA BANKASI (table_registry) 1-to-1 synchronized with ORTAK HAVUZ
-        # deduplication so duplicate wheels / collector_ keys do not inflate
-        # MASA BANKASI above ORTAK HAVUZ.
-        if isinstance(self.table_registry, dict) and self.table_registry:
+        # deduplication: remove ONLY actual 12-gram duplicates (duplicate_keys),
+        # keep unique collector_ tables, and auto-restore any unique table on disk
+        # that was previously popped from table_registry.
+        if isinstance(self.table_registry, dict):
             reg_changed = False
             seen_reg_keys = set()
             for tid in list(self.table_registry.keys()):
@@ -5451,8 +5454,7 @@ class RouletteState:
                 rk = safe_table_key(ident)
                 row = self.table_registry.get(tid) or {}
                 if (
-                    str(tid).startswith("collector_")
-                    or rk in duplicate_keys
+                    rk in duplicate_keys
                     or rk in seen_reg_keys
                     or (by_key and rk not in unique_keys)
                 ):
@@ -5474,6 +5476,35 @@ class RouletteState:
                     row["display_name"] = str(tid)
                     self.table_registry[tid] = row
                     reg_changed = True
+
+            # Restore any unique pragmatic_ table in unique_keys that is missing from table_registry
+            for rk in unique_keys:
+                if rk in seen_reg_keys or not rk.startswith("pragmatic_"):
+                    continue
+                restored_tid = rk[len("pragmatic_"):]
+                restored_name = restored_tid
+                restored_source = "SEKMELİ TOPLA sağ-alt SON500"
+                try:
+                    p500 = os.path.join(self.data_dir, f"table_history500_{rk}.json")
+                    if os.path.exists(p500):
+                        with open(p500, "r", encoding="utf-8") as f5:
+                            meta5 = json.load(f5) or {}
+                        restored_tid = str(meta5.get("table_id") or restored_tid).strip() or restored_tid
+                        restored_name = str(meta5.get("display_name") or restored_name).strip() or restored_tid
+                except Exception:
+                    pass
+                seq_len = len(by_key.get(rk, []))
+                self.table_registry[restored_tid] = {
+                    "table_id": restored_tid,
+                    "display_name": restored_name[:90],
+                    "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "last_update_epoch": key_mtime.get(rk, now),
+                    "long_count": seq_len,
+                    "last_source": restored_source,
+                }
+                seen_reg_keys.add(rk)
+                reg_changed = True
+
             if reg_changed:
                 self._cached_bank_rows_ts = 0.0
                 self._save_table_registry()
@@ -5904,21 +5935,23 @@ class RouletteState:
                                 identity = other_ident
                                 key = other_key
                                 break
-                            else:
+                            elif str(other_tid).startswith("collector_") or (
+                                display_name
+                                and str((self.table_registry.get(other_tid) or {}).get("display_name") or "") == str(display_name)
+                            ):
                                 old_row = self.table_registry.pop(other_tid, None) or {}
                                 self._pool_memory_tables.pop(other_key, None)
                                 self._memory_table500.pop(other_key, None)
                                 if (not display_name or display_name == tid) and old_row.get("display_name"):
                                     display_name = str(old_row.get("display_name"))
 
-            if not tid.startswith("collector_"):
-                self._update_table_registry(
-                    tid,
-                    display_name=display_name,
-                    long_count=len(long_hist),
-                    source=source_label,
-                    save_disk=False,
-                )
+            self._update_table_registry(
+                tid,
+                display_name=display_name,
+                long_count=len(long_hist),
+                source=source_label,
+                save_disk=False,
+            )
 
             self._pool_memory_tables[key] = list(long_hist)
             if dirty_long:
@@ -8803,8 +8836,8 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   const nowMs = Date.now();
   const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 700;
 
-  // If the "Masa dolu" (Table full) modal from Privé Lounge is open on screen,
-  // dismiss it by clicking "Tamam" / "OK" and stop the lobby scan immediately.
+  // If the "Masa dolu" (Table full) modal from a VIP/Privé table is open on screen,
+  // dismiss it by clicking "Tamam" / "OK" and skip that card without stopping the scan.
   if (/\bMASA\s+DOLU\b|\bBU\s+OZEL\s+MASA\s+SU\s+ANDA\s+DOLU\b|\bTABLE\s+FULL\b/.test(bodyText)) {{
     const okBtns = Array.from(document.querySelectorAll('button,[role="button"],div,span')).filter(el => {{
       if (!visible(el)) return false;
@@ -8816,9 +8849,27 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }}
     return {{
       ok: true,
-      mode: 'prive_lounge_stop',
-      stage: 'prive-lounge-masa-dolu',
-      clickedLabel: 'Privé Lounge Rulet Deluxe (Masa dolu)',
+      mode: 'masa_dolu_skip',
+      stage: 'masa-dolu-modal-closed',
+      clickedLabel: 'Masa dolu (atlandı)',
+      cards,
+      title,
+      url: href
+    }};
+  }}
+
+  // If Korece Rulet (Korean Roulette) at the end of the lobby has already been
+  // clicked and collected, stop the lobby scan right at Korece Rulet!
+  const koreceDone = cardHits.some(c =>
+    /\bKORECE\s*RULET\b|\bKOREAN\s*ROULETTE\b/.test(norm(c.label)) &&
+    (PY_CLICKED_KEYS.has(c.key) || scanState.clickedKeys[c.key])
+  );
+  if (koreceDone) {{
+    return {{
+      ok: true,
+      mode: 'korece_rulet_stop',
+      stage: 'korece-rulet-completed',
+      clickedLabel: 'Korece Rulet',
       cards,
       title,
       url: href
@@ -8828,18 +8879,6 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   if (PY_CLICK_CARDS && cardHits.length && clickReady) {{
     const next = cardHits.find(c => !PY_CLICKED_KEYS.has(c.key) && !scanState.clickedKeys[c.key]);
     if (next) {{
-      if (/PRIV[EÉ]\s*LOUNGE|PRIVE\s*LOUNGE|MASA\s*DOLU|TABLE\s*FULL/.test(norm(next.label))) {{
-        return {{
-          ok: true,
-          mode: 'prive_lounge_stop',
-          stage: 'prive-lounge-reached',
-          clickedKey: next.key,
-          clickedLabel: next.label,
-          cards,
-          title,
-          url: href
-        }};
-      }}
       scanState.clickedKeys[next.key] = nowMs;
       scanState.lastCardClickAt = nowMs;
       try {{
@@ -10291,6 +10330,7 @@ class ChromeBridge(threading.Thread):
         self.table_scan_click_started_at = {}
         self.table_scan_returning_until = 0.0
         self.table_scan_lobby_seen_at = 0.0
+        self.table_scan_stop_after_current = False
         if self.ws is not None:
             for tid in tids:
                 try:
@@ -10322,6 +10362,7 @@ class ChromeBridge(threading.Thread):
         self.table_scan_last_clicked_label = ""
         self.table_scan_returning_until = 0.0
         self.table_scan_lobby_seen_at = 0.0
+        self.table_scan_stop_after_current = False
         self.send(
             "Target.createTarget",
             {
@@ -10454,6 +10495,16 @@ class ChromeBridge(threading.Thread):
 
     def _collector_table_identity(self, sid="", real_table_id="", title=""):
         real = str(real_table_id or "").strip()
+        if not real:
+            best_ts = 0.0
+            for s_id, act in list(self.session_table_activity.items()):
+                if not self._is_collector_session(s_id):
+                    continue
+                cand_tid = str((act or {}).get("table_id") or "").strip()
+                cand_ts = float((act or {}).get("last", 0.0) or 0.0)
+                if cand_tid and cand_ts >= best_ts:
+                    real = cand_tid
+                    best_ts = cand_ts
         raw_label = str(
             title
             or self.table_scan_current_click_label
@@ -10559,6 +10610,13 @@ class ChromeBridge(threading.Thread):
                 with self.state.lock:
                     self.state.table_scan_status = (
                         f"SEKMELİ TOPLA: {reason} • oyun içi Lobi düğmesine basılıyor"
+                    )
+                if getattr(self, "table_scan_stop_after_current", False):
+                    self.table_scan_stop_after_current = False
+                    with self.state.lock:
+                        bank_count = len(self.state.table_registry)
+                    self.stop_table_scan(
+                        f"Korece Rulet masası tamamlandı • tarama durduruldu • kayıtlı banka {bank_count}"
                     )
             elif tid and root and tid != root:
                 self.send("Target.closeTarget", {"targetId": tid})
@@ -11073,12 +11131,29 @@ class ChromeBridge(threading.Thread):
             # lobby cards. The visible lobby scan will continue/finish the pass.
             return
 
-        if mode == "prive_lounge_stop":
+        if mode in ("korece_rulet_stop", "prive_lounge_stop"):
             with self.state.lock:
                 bank_count = len(self.state.table_registry)
             self.stop_table_scan(
-                f"Privé Lounge Rulet Deluxe masasına ulaşıldı • tarama tamamlandı • kayıtlı banka {bank_count}"
+                f"Korece Rulet masasına ulaşıldı • tarama tamamlandı • kayıtlı banka {bank_count}"
             )
+            return
+
+        if mode == "masa_dolu_skip":
+            key = str(self.table_scan_current_click_key or self.table_scan_last_clicked_label or sid)
+            if key:
+                self.table_scan_probe_done.add(key)
+                self.table_scan_probe_skip.add(key)
+            for scan_sid in list(self.table_scan_click_deadlines.keys()):
+                if self._is_collector_session(scan_sid):
+                    self.table_scan_click_deadlines.pop(scan_sid, None)
+                    self.table_scan_click_started_at.pop(scan_sid, None)
+            self.table_scan_current_click_key = ""
+            self.table_scan_current_click_label = ""
+            with self.state.lock:
+                self.state.table_scan_status = (
+                    f"{prefix}: Masa dolu uyarısı kapatıldı • sıradaki masaya geçiliyor"
+                )
             return
 
         if mode in ("game_no_son500", "game_blocked"):
@@ -11195,14 +11270,9 @@ class ChromeBridge(threading.Thread):
                 self.table_scan_current_click_key = clicked_key
             if clicked_label and any(
                 x in clicked_label.upper()
-                for x in ("PRIVE LOUNGE", "PRIVÉ LOUNGE", "MASA DOLU", "TABLE FULL")
+                for x in ("KORECE RULET", "KOREAN ROULETTE")
             ):
-                with self.state.lock:
-                    bank_count = len(self.state.table_registry)
-                self.stop_table_scan(
-                    f"Privé Lounge Rulet Deluxe masasına ulaşıldı • tarama tamamlandı • kayıtlı banka {bank_count}"
-                )
-                return
+                self.table_scan_stop_after_current = True
             for row in [r for r in (value.get("cards") or []) if isinstance(r, dict)]:
                 key = str(row.get("key") or "").strip()
                 if key:
