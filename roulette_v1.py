@@ -3536,7 +3536,7 @@ def sanitize_long_archive(results_newest_first, window=8):
         if isinstance(x, int) and 0 <= x <= 36
     ]
     n_raw = len(raw)
-    if n_raw < 16:
+    if n_raw <= 500:
         return raw
 
     # Pass 1: Fast collapse of consecutive short tandem repeats (only checks p when raw[idx] == raw[idx+p])
@@ -8966,17 +8966,16 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     (b.clientHeight*Math.min(b.scrollHeight,8000))
     -(a.clientHeight*Math.min(a.scrollHeight,8000))
   )[0] || null;
-  let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=true;
+  let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=false;
   if (scrollTarget) {{
     scrollTop=scrollTarget.scrollTop;
     scrollHeight=scrollTarget.scrollHeight;
     clientHeight=scrollTarget.clientHeight;
-    atBottom=scrollTop+clientHeight>=scrollHeight-8;
+    atBottom=(scrollHeight > clientHeight + 40) && (scrollTop + clientHeight >= scrollHeight - 12);
     if (atBottom) scanState.atBottomSeen = true;
-    // V2.9.16: after the scanner reaches bottom once, do not force-scroll
-    // down again. This lets the user manually scroll upward without the
-    // program pulling the lobby back to the bottom.
-    if (!atBottom && !scanState.atBottomSeen) {{
+    // Always scroll down when all currently visible cards have been clicked
+    // and we are not at the bottom (returning from a table resets lobby scrollTop to 0!).
+    if (!atBottom) {{
       scrollTarget.scrollBy({{top:Math.max(360,Math.floor(clientHeight*0.72)),behavior:'instant'}});
     }}
   }}
@@ -11388,13 +11387,12 @@ class ChromeBridge(threading.Thread):
             client_height = int(value.get("clientHeight", 0) or 0)
         except (TypeError, ValueError):
             scroll_height = scroll_top = client_height = 0
-        at_bottom = bool(value.get("atBottom", True))
-        bottom_seen_once = bool(value.get("atBottomSeen", False))
+        at_bottom = bool(value.get("atBottom", False))
 
         if scroll_height != self.table_scan_last_scroll_height:
             self.table_scan_last_scroll_height = scroll_height
             self.table_scan_no_progress = 0
-        elif (at_bottom or bottom_seen_once) and new_cards == 0 and self.table_scan_visited:
+        elif at_bottom and new_cards == 0 and self.table_scan_visited:
             self.table_scan_no_progress += 1
         else:
             self.table_scan_no_progress = 0
@@ -11407,8 +11405,8 @@ class ChromeBridge(threading.Thread):
         with self.state.lock:
             bank_count = len(self.state.table_registry)
         if (
-            (at_bottom or bottom_seen_once)
-            and self.table_scan_no_progress >= 3
+            at_bottom
+            and self.table_scan_no_progress >= 4
             and probe_active == 0
             and probe_waiting == 0
             and remaining_clicks <= 0
@@ -11464,7 +11462,6 @@ class ChromeBridge(threading.Thread):
             typ == "iframe"
             and self.table_scan_enabled
             and self.table_scan_target_id
-            and self.table_scan_click_deadlines
             and tid not in self.target_parent
         ):
             self.target_parent[tid] = str(self.table_scan_target_id)
@@ -13515,7 +13512,14 @@ class ChromeBridge(threading.Thread):
                             self.table_scan_current_click_key = ""
                             self.table_scan_current_click_label = ""
                             return
-                        if is_collector and bool(value.get("lobbyLike")):
+                        wait_started_at = max(
+                            [float(x or 0.0) for x in self.table_scan_click_started_at.values()] or [0.0]
+                        )
+                        if (
+                            is_collector
+                            and bool(value.get("lobbyLike"))
+                            and (returning_to_lobby or not wait_started_at or (now_value - wait_started_at) >= 6.0)
+                        ):
                             self.table_scan_returning_until = 0.0
                             self.table_scan_lobby_seen_at = time.time()
                             for scan_sid in list(self.session_info.keys()):
@@ -13707,6 +13711,13 @@ class ChromeBridge(threading.Thread):
                 parent_tid = self.session_targets.get(str(parent_sid or ""), "")
                 if parent_tid:
                     self.target_parent[tid] = parent_tid
+                elif (
+                    str(ti.get("type") or "") == "iframe"
+                    and self.table_scan_enabled
+                    and self.table_scan_target_id
+                    and tid not in self.target_parent
+                ):
+                    self.target_parent[tid] = str(self.table_scan_target_id)
                 self.target_info[tid] = dict(ti)
                 self.target_sessions[tid] = child_sid
                 self.session_targets[child_sid] = tid
@@ -14573,8 +14584,8 @@ class App:
         scan_bar=tk.Frame(data,bg=self.PANEL)
         scan_bar.pack(fill="x",padx=8,pady=(0,5))
         tk.Button(
-            scan_bar,text="DGA CANLI / MASALARI TARA",command=self.start_table_scan_ui,
-            font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.GREEN,
+            scan_bar,text="TEK SEKME LOBİ TOPLA • 5 DK",command=self.start_tab_walk_scan_ui,
+            font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.BLUE,
             activebackground=self.PANEL2,activeforeground=self.GREEN,
             relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
         ).pack(side="left",fill="x",expand=True,padx=(0,2))
@@ -14582,32 +14593,6 @@ class App:
             scan_bar,text="TARAMAYI DURDUR",command=self.stop_table_scan_ui,
             font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.RED,
             activebackground=self.PANEL2,activeforeground=self.RED,
-            relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
-        ).pack(side="left",fill="x",expand=True,padx=(2,0))
-        tabwalk_bar=tk.Frame(data,bg=self.PANEL)
-        tabwalk_bar.pack(fill="x",padx=8,pady=(0,5))
-        tk.Button(
-            tabwalk_bar,text="TEK SEKME LOBİ TOPLA • 5 DK",command=self.start_tab_walk_scan_ui,
-            font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.BLUE,
-            activebackground=self.PANEL2,activeforeground=self.GREEN,
-            relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
-        ).pack(side="left",fill="x",expand=True,padx=(0,2))
-        tk.Label(
-            tabwalk_bar,text="masaları tek tek aç/kapat",font=("Segoe UI",7,"bold"),
-            bg=self.PANEL,fg=self.MUTED,
-        ).pack(side="left",fill="x",expand=True,padx=(2,0))
-        api_bar=tk.Frame(data,bg=self.PANEL)
-        api_bar.pack(fill="x",padx=8,pady=(0,5))
-        tk.Button(
-            api_bar,text="MASA API ÖĞREN",command=self.start_api_teach_ui,
-            font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.GREEN,
-            activebackground=self.PANEL2,activeforeground=self.GREEN,
-            relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
-        ).pack(side="left",fill="x",expand=True,padx=(0,2))
-        tk.Button(
-            api_bar,text="KAYITLI MASALARI DGA CANLI YENİLE",command=self.start_api_refresh_ui,
-            font=("Segoe UI",8,"bold"),bg=self.PANEL2,fg=self.YELLOW,
-            activebackground=self.PANEL2,activeforeground=self.GREEN,
             relief="flat",bd=0,padx=7,pady=5,cursor="hand2",
         ).pack(side="left",fill="x",expand=True,padx=(2,0))
         self.history_brain_line=tk.Label(data,text="Geçmiş sinyali bekleniyor...",font=("Consolas",8),justify="left",anchor="w",fg=self.TEXT,bg=self.PANEL,wraplength=380)
