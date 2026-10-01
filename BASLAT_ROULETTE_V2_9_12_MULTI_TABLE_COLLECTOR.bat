@@ -105,13 +105,8 @@ if not defined CHROME (
 
 :START_ALL
 set "LASTURL="
-set "TMP_URL_FILE=%TEMP%\roulette_last_url.txt"
-del /f /q "%TMP_URL_FILE%" >nul 2>nul
-"%PYTHON_EXE%" %PYTHON_ARGS% "%~dp0resolve_last_roulette.py" > "%TMP_URL_FILE%" 2>nul
-if exist "%TMP_URL_FILE%" (
-    set /p LASTURL=<"%TMP_URL_FILE%"
-    del /f /q "%TMP_URL_FILE%" >nul 2>nul
-)
+
+for /f "usebackq delims=" %%U in (`"%PYTHON_EXE%" %PYTHON_ARGS% "%~dp0resolve_last_roulette.py"`) do if not "%%U"=="" set "LASTURL=%%U"
 
 if defined LASTURL (
     echo [AUTO] Canli casino girisi aciliyor...
@@ -120,10 +115,6 @@ if defined LASTURL (
         --remote-debugging-port=9222 ^
         --remote-allow-origins=* ^
         --user-data-dir="%LOCALAPPDATA%\PragmaticBlackjackChrome" ^
-        --disable-backgrounding-occluded-windows ^
-        --disable-renderer-backgrounding ^
-        --disable-background-timer-throttling ^
-        --disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling ^
         --start-maximized ^
         "%LASTURL%"
 ) else (
@@ -133,10 +124,6 @@ if defined LASTURL (
         --remote-debugging-port=9222 ^
         --remote-allow-origins=* ^
         --user-data-dir="%LOCALAPPDATA%\PragmaticBlackjackChrome" ^
-        --disable-backgrounding-occluded-windows ^
-        --disable-renderer-backgrounding ^
-        --disable-background-timer-throttling ^
-        --disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling ^
         --start-maximized
 )
 
