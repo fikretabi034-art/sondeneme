@@ -7931,36 +7931,34 @@ HISTORY500_SCAN = r"""
 
   let tab = findHistoryTab();
   let expandedDrawer = false;
-  if (!tab && ALLOW_EXPAND) {
-    const autoRect = autoButtons.length ? autoButtons[0].getBoundingClientRect() : null;
+  // CRITICAL: Only attempt to click the drawer expand toggle when ALLOW_EXPAND
+  // is true (background collector only) AND the in-game OTOMATİK OYUN button
+  // (autoFound) is visibly present on screen. Never click anything in a lobby!
+  if (!tab && ALLOW_EXPAND && autoFound) {
+    const autoRect = autoButtons[0].getBoundingClientRect();
     const toggles = [];
     for (const el of deepQueryAll(document, 'button,[role="button"],a,div,span,svg')) {
       if (!visibleStyle(el)) continue;
+      if (el.closest && el.closest('[data-gameid],[data-game-id],[data-table-id],[data-tableid],[data-testid="wow-tile"]')) continue;
       const r = el.getBoundingClientRect();
       const text = norm(readableText(el));
       if (r.width < 10 || r.height < 10 || r.width > 95 || r.height > 80) continue;
       if (r.top < innerHeight * 0.42 || r.top > innerHeight * 0.97) continue;
-      if (/OTOMAT|AUTOMATIC|BET|BAHİS|SPIN|VOISIN|ORPHELIN|TIERS/.test(text)) continue;
+      if (/OTOMAT|AUTOMATIC|BET|BAHİS|SPIN|VOISIN|ORPHELIN|TIERS|ROULETTE|RULET/.test(text)) continue;
       if (numRe.test(text)) continue;
+      const dy = autoRect.top - r.bottom;
+      const dx = Math.abs((r.left + r.width / 2) - autoRect.right);
+      if (dy < -12 || dy > 95 || r.left < autoRect.left - 120 || r.right > autoRect.right + 120) continue;
       const hint = [
         el.id || '', el.getAttribute('class') || '',
         el.getAttribute('aria-label') || '', el.getAttribute('title') || '',
         el.getAttribute('data-testid') || '',
         (parentOf(el) && (parentOf(el).getAttribute('class') || '')) || ''
       ].join(' ').toLowerCase();
-      let score = 0;
+      let score = 65 - Math.min(40, Math.abs(dy - 22) / 2) - Math.min(25, dx / 8);
       if (/(history|statistic|result|drawer|expand|collapse|chevron|arrow|toggle|recent)/.test(hint)) score += 75;
       if (text === '' || text === '⌃' || text === '▲' || text === '˄' || text === '^') score += 25;
-      if (autoRect) {
-        const dy = autoRect.top - r.bottom;
-        const dx = Math.abs((r.left + r.width / 2) - autoRect.right);
-        if (dy >= -12 && dy <= 95 && r.left >= autoRect.left - 120 && r.right <= autoRect.right + 120) {
-          score += 65 - Math.min(40, Math.abs(dy - 22) / 2) - Math.min(25, dx / 8);
-        }
-      } else if (r.left >= innerWidth * 0.50) {
-        score += 20;
-      }
-      if (score >= 45) {
+      if (score >= 55) {
         toggles.push({el, score});
       }
     }
@@ -8010,7 +8008,7 @@ HISTORY500_SCAN = r"""
   }
 
   collectFromTab();
-  if (tab && !roots.length) {
+  if (tab && ALLOW_EXPAND && !roots.length) {
     try { tab.click(); } catch (_) {}
     await sleep(350);
     collectFromTab();
@@ -11627,19 +11625,18 @@ class ChromeBridge(threading.Thread):
                                 context=nav_sid,
                             )
                 elif self.lobby_teach_ready():
-                    # Connection may have been established after the scan thread
-                    # entered this loop; kick the route exactly once.
-                    if self.ws is not None:
-                        self.start_learned_route()
-                    else:
-                        with self.state.lock:
-                            self.state.autolobby_status = (
-                                f"ÖĞREN: CHROME BEKLENİYOR • {len(self.lobby_teach_steps)} işlem hazır"
-                            )
+                    # Do NOT auto-start learned route replay on startup; Chrome
+                    # already opens the user's last visited URL and auto-replay
+                    # would force-scroll the page or click lobby cards while the
+                    # user is browsing with the mouse.
+                    with self.state.lock:
+                        self.state.autolobby_status = (
+                            f"ÖĞREN: HAZIR ({len(self.lobby_teach_steps)} adım) • manuel kontrolde"
+                        )
                 else:
                     with self.state.lock:
                         self.state.autolobby_status = (
-                            "ÖĞREN: GEREKLİ • BAŞLAT → yolu göster → BİTİR"
+                            "ÖĞREN: PASİF • son sayfa otomatik açıldı"
                         )
 
                 for sid in list(self.session_info.keys()):
@@ -11739,11 +11736,13 @@ class ChromeBridge(threading.Thread):
 
                         if now - float(last_500_scan.get(sid, 0.0)) >= 2.5:
                             last_500_scan[sid] = now
-                            with self.state.lock:
-                                has_active_500 = len(self.state.table_history_500) >= 40
+                            # CRITICAL: On the user's active tab, ALWAYS use
+                            # ACTIVE_HISTORY500_SCAN (ALLOW_EXPAND = false) so
+                            # the program never clicks or expands anything while
+                            # the user is browsing the lobby or playing!
                             for ctx_id in active_ctx_ids:
                                 h500_params = {
-                                    "expression": ACTIVE_HISTORY500_SCAN if has_active_500 else HISTORY500_SCAN,
+                                    "expression": ACTIVE_HISTORY500_SCAN,
                                     "returnByValue": True,
                                     "awaitPromise": True,
                                 }
@@ -11773,7 +11772,7 @@ class ChromeBridge(threading.Thread):
                         self.send(
                             "Runtime.evaluate",
                             {
-                                "expression": HISTORY500_SCAN,
+                                "expression": ACTIVE_HISTORY500_SCAN,
                                 "returnByValue": True,
                                 "awaitPromise": True,
                             },
@@ -13629,11 +13628,12 @@ class ChromeBridge(threading.Thread):
 
                 with self.state.lock:
                     self.state.chrome_connected = True
-                    self.state.status = "CHROME BAĞLI • otomatik yol hazır"
+                    self.state.status = "CHROME BAĞLI • son sayfa hazır"
 
-                # Fresh process/reconnect: learned route always starts at step 0.
-                if self.lobby_teach_steps and not self.lobby_teaching:
-                    self.start_learned_route()
+                # Do NOT auto-start learned route on connect/reconnect; Chrome
+                # already opens the user's last visited URL and auto-replay
+                # would scroll the page or click lobby cards on its own.
+                self.lobby_route_started = False
 
                 self.pending.clear()
                 self.target_info.clear()
