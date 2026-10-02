@@ -5357,6 +5357,10 @@ class RouletteState:
         self._last_collector_stack_pass = {}
         self.table_scan_status = "MASA TARAMA: hazır • yeniden eğitim gerekmez"
         self.lobby_change_status = "LOBİ TAKİBİ: Sıra değişimi ve kapalı masa bildirimi aktif"
+        try:
+            self._rebuild_multi_table_pool(force_disk=True)
+        except Exception:
+            pass
         self.background_status = self._bank_status_text()
 
         self._external_thread = threading.Thread(target=self._external_loop, daemon=True)
@@ -5477,6 +5481,31 @@ class RouletteState:
                 return (tuple(front),)
             return tuple(tuple(front[i:i + width]) for i in range(0, n - width + 1, step))
 
+        def _canon_for_key(k):
+            if not k.startswith("pragmatic_"):
+                return ""
+            tid_k = k[len("pragmatic_"):]
+            if isinstance(self.table_registry, dict):
+                row_k = self.table_registry.get(tid_k) or {}
+                dn_k = str(row_k.get("display_name") or "").strip()
+                c = canonical_pragmatic_table_name(dn_k, fallback="")
+                if c:
+                    return c
+            c2 = canonical_pragmatic_table_name(tid_k, fallback="")
+            if c2:
+                return c2
+            try:
+                p500 = os.path.join(self.data_dir, f"table_history500_{k}.json")
+                if os.path.exists(p500):
+                    with open(p500, "r", encoding="utf-8") as f5:
+                        meta5 = json.load(f5) or {}
+                    c3 = canonical_pragmatic_table_name(meta5.get("display_name") or "", fallback="")
+                    if c3:
+                        return c3
+            except Exception:
+                pass
+            return ""
+
         def _has_real_reg_name(k):
             if not isinstance(self.table_registry, dict) or not k.startswith("pragmatic_"):
                 return 1
@@ -5484,8 +5513,10 @@ class RouletteState:
             row_k = self.table_registry.get(tid_k) or {}
             dn = str(row_k.get("display_name") or "").strip().lower()
             src = str(row_k.get("last_source") or "").strip()
-            if src in ("AKTİF SON500", "AKTİF MASA SON500", "CANLI SPIN", "ARKA PLAN SON500", "ARKA PLAN statisticHistory"):
+            if src in ("AKTİF SON500", "AKTİF MASA SON500", "CANLI SPIN"):
                 return 2
+            if _canon_for_key(k) and not tid_k.startswith("collector_"):
+                return -1
             if not dn or dn in ("roulette", "rulet") or dn.startswith(("http://", "https://", "client.", "collector_")) or dn == tid_k.lower():
                 return 1
             return 0
@@ -5501,6 +5532,7 @@ class RouletteState:
         unique_seqs = []
         unique_keys = set()
         duplicate_keys = set()
+        seen_canon_names = set()
         combined_existing_grams = set()
         has_pragmatic_keys = any(k.startswith("pragmatic_") and "http_" not in k and "https_" not in k for k in ordered_keys)
         for k in ordered_keys:
@@ -5518,22 +5550,29 @@ class RouletteState:
                 src_k = str(row_k.get("last_source") or "").strip()
                 dn_k = str(row_k.get("display_name") or "").strip().lower()
                 if (
-                    src_k in ("AKTİF SON500", "AKTİF MASA SON500", "CANLI SPIN", "ARKA PLAN SON500", "ARKA PLAN statisticHistory")
+                    src_k in ("AKTİF SON500", "AKTİF MASA SON500", "CANLI SPIN")
                     or dn_k.startswith(("http://", "https://"))
-                    or (src_k == "CLICK SCAN statisticHistory" and dn_k in ("roulette", "rulet"))
                 ):
                     duplicate_keys.add(k)
                     continue
-            probes = _probe_grams(seq, 12, 16)
-            if any(p in combined_existing_grams for p in probes):
-                duplicate_keys.add(k)
-                continue
+            canon_k = _canon_for_key(k)
+            if canon_k:
+                canon_up = canon_k.upper()
+                if canon_up in seen_canon_names:
+                    duplicate_keys.add(k)
+                    continue
+                seen_canon_names.add(canon_up)
+            else:
+                probes = _probe_grams(seq, 12, 16)
+                if any(p in combined_existing_grams for p in probes):
+                    duplicate_keys.add(k)
+                    continue
             unique_seqs.append(seq)
             unique_keys.add(k)
             combined_existing_grams.update(_all_grams(seq, 12))
 
-        # Keep MASA BANKASI (table_registry) 1-to-1 synchronized with ORTAK HAVUZ
-        # deduplication: remove ONLY actual 12-gram duplicates or non-collector entries.
+        # Keep MASA BANKASI (table_registry) synchronized with ORTAK HAVUZ
+        # without ever wiping valid table banks.
         if isinstance(self.table_registry, dict):
             reg_changed = False
             seen_reg_keys = set()
@@ -5546,10 +5585,8 @@ class RouletteState:
                 if (
                     rk in duplicate_keys
                     or rk in seen_reg_keys
-                    or (by_key and rk not in unique_keys)
-                    or src_row in ("AKTİF SON500", "AKTİF MASA SON500", "CANLI SPIN", "ARKA PLAN SON500", "ARKA PLAN statisticHistory")
+                    or src_row in ("AKTİF SON500", "AKTİF MASA SON500", "CANLI SPIN")
                     or dn_row.startswith(("http://", "https://"))
-                    or (src_row == "CLICK SCAN statisticHistory" and dn_row in ("roulette", "rulet"))
                 ):
                     self.table_registry.pop(tid, None)
                     reg_changed = True
@@ -5657,13 +5694,9 @@ class RouletteState:
                         "AKTİF SON500",
                         "AKTİF MASA SON500",
                         "CANLI SPIN",
-                        "ARKA PLAN SON500",
-                        "ARKA PLAN statisticHistory",
                     ):
                         continue
                     if name_raw.lower().startswith(("http://", "https://")):
-                        continue
-                    if src_raw == "CLICK SCAN statisticHistory" and name_raw.lower() in ("roulette", "rulet"):
                         continue
                     if any(str(b).upper() in name_up for b in TAB_WALK_BLOCKED_TABLE_LABELS):
                         continue
@@ -5746,7 +5779,7 @@ class RouletteState:
                         fname.startswith("table_long_archive_")
                         or fname.startswith("table_history500_")
                         or fname.startswith("table_history_500_")
-                        or fname == "table_registry.json"
+                        or fname in ("table_registry.json", "pragmatic_table_registry.json")
                     ) and fname.endswith(".json"):
                         try:
                             os.remove(os.path.join(folder, fname))
@@ -6091,9 +6124,7 @@ class RouletteState:
             for prefix_name in ("table_long_archive_", "table_history500_"):
                 try:
                     obs_path = os.path.join(self.data_dir, f"{prefix_name}{obs_k}.json")
-                    if os.path.exists(obs_path):
-                        os.remove(obs_path)
-                        self._pool_disk_cache.pop(obs_path, None)
+                    self._pool_disk_cache.pop(obs_path, None)
                 except Exception:
                     pass
 
@@ -8877,17 +8908,17 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     return null;
   }}
 
-  const isOuterCasinoWrapper = !host.startsWith('client.')
-    && !host.startsWith('games.')
-    && !path.includes('/apps/lobby/')
-    && !path.includes('/desktop/')
-    && lobbyTileElements.length === 0
-    && document.querySelectorAll('iframe').length > 0;
-  if (isOuterCasinoWrapper) {{
-    return {{ok:true,mode:'waiting',stage:'outer-wrapper-frame',title,url:href}};
-  }}
-
-  if (!providerContext) {{
+  const isPragmaticHost = host.includes('pragmaticplaylive.net')
+    || host.startsWith('client.')
+    || host.startsWith('games.')
+    || path.includes('/apps/lobby/')
+    || path.includes('/desktop/')
+    || path.includes('/gs2c/html5Game.do');
+  if (!isPragmaticHost) {{
+    const lowHref = String(href || '').toLowerCase();
+    if (lowHref.includes('opengames=3300922-real') || document.querySelectorAll('iframe').length > 0) {{
+      return {{ok:true,mode:'waiting',stage:'outer-wrapper-frame',title,url:href}};
+    }}
     const launched=operatorLobbyLauncher();
     if (launched) return launched;
     return {{ok:true,mode:'waiting',stage:'provider-context',title,url:href}};
@@ -9028,32 +9059,32 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   // because the collapsed left sidebar keeps those labels in document.body.innerText!
   const fullDomText = norm(document.body && document.body.textContent || '');
   const hasRouletteFilterPills = /\b(STANDART|STANDARD)\b/.test(bodyText + ' ' + fullDomText)
-    && /\b(ANA\s*DILINIZDE|VERSIYONLAR|VERSIONS|OTOMATIK|AUTO)\b/.test(bodyText + ' ' + fullDomText);
+    && /\b(ANA\s*DILINIZDE|VERSIYONLAR|VERSIONS|OTOMATIK|AUTO|INGILIZCE|TURKCE)\b/.test(bodyText + ' ' + fullDomText);
+  const hasRouletteOnlyTables = /\b(TURKCE\s+RULET|TURKCE\s+MEGA\s+RULET|BREZILYA\s+PORTEKIZCESI\s+RULET|RULET\s+2\s+EXTRA\s+TIME|RULET\s+MACAO|HIZLI\s+RULET\s+2|FRANSIZ\s+RULETI|KRISTAL\s+RULET|ALMANCA\s+RULET|RUSCA\s+RULET|RUMENCE\s+RULET|KORECE\s+RULET)\b/.test(bodyText + ' ' + fullDomText);
   const hasTopRouletteHeader = visibleControls.some(el => {{
     const r = el.getBoundingClientRect();
-    const t = norm(el.innerText || el.textContent || '');
-    return (t === 'RULET' || t === 'ROULETTE') && r.top <= 115 && r.left >= 32 && r.left <= 280 && r.height <= 70;
+    const t = norm(el.innerText || '');
+    return (t === 'RULET' || t === 'ROULETTE') && r.top <= 105 && r.left >= 55 && r.left <= 260 && r.height <= 70;
   }});
-  const hasTopForYouHeader = visibleControls.some(el => {{
-    const r = el.getBoundingClientRect();
-    const t = norm(el.innerText || el.textContent || '');
-    return (t === 'SIZE OZEL' || t === 'FOR YOU') && r.top <= 125 && r.left >= 48 && r.left <= 340 && r.height <= 70;
-  }});
-  const hasHomeBannerOrRecent = /\bSON\s+OYNANAN\s+OYUNLAR\b|\bRECENTLY\s+PLAYED\b|\bONE\s+BLACKJACK\b/.test(bodyText);
+  const hasHomeBannerOrRecent = /\bSON\s+OYNANAN\s+OYUNLAR\b|\bRECENTLY\s+PLAYED\b|\bONE\s+BLACKJACK\b|\bSWEET\s+BONANZA\b|\bMEGA\s+WHEEL\b/.test(bodyText);
 
-  if ((hasRouletteFilterPills || hasTopRouletteHeader || selected(categoryEl) || selected(category)) && !hasHomeBannerOrRecent && !hasTopForYouHeader) {{
+  if (hasRouletteFilterPills || hasRouletteOnlyTables || hasTopRouletteHeader || ((selected(categoryEl) || selected(category)) && !hasHomeBannerOrRecent)) {{
     scanState.rouletteRoomEntered = true;
-  }} else if (hasHomeBannerOrRecent || hasTopForYouHeader) {{
+  }} else if (hasHomeBannerOrRecent && !hasRouletteFilterPills && !hasRouletteOnlyTables) {{
     scanState.rouletteRoomEntered = false;
   }}
 
-  const inRouletteRoom = !hasHomeBannerOrRecent && !hasTopForYouHeader && (
+  const inRouletteRoom = (
     hasRouletteFilterPills
+    || hasRouletteOnlyTables
     || hasTopRouletteHeader
-    || !!scanState.rouletteRoomEntered
-    || selected(categoryEl)
-    || selected(category)
-    || (PY_CLICKED_KEYS.size > 0 && lobbyTileCount >= 2)
+    || (!hasHomeBannerOrRecent && (
+      !!scanState.rouletteRoomEntered
+      || selected(categoryEl)
+      || selected(category)
+      || (PY_CLICKED_KEYS.size > 0 && lobbyTileCount >= 2)
+    ))
+    || (Number(scanState.categoryAttempts || 0) >= 2 && lobbyTileCount >= 2)
   );
 
   let categoryState = inRouletteRoom ? 'selected' : 'missing';
@@ -10944,6 +10975,36 @@ class ChromeBridge(threading.Thread):
         if tid in known_tids:
             return True
 
+        # In single-tab lobby walk mode (table_scan_enabled), Chrome often reports
+        # the cross-origin Pragmatic Play Lobby OOPIF iframe (client.pragmaticplaylive.net)
+        # via Target.getTargets / Target.attachedToTarget without a parent sessionId
+        # or before collectorcreate resolves table_scan_target_id. Always recognize
+        # Pragmatic iframe targets as collector targets while scanning is active!
+        if getattr(self, "table_scan_enabled", False):
+            info_self = (getattr(self, "target_info", {}) or {}).get(tid, {}) or {}
+            typ_self = str(info_self.get("type") or "").lower()
+            url_self = str(info_self.get("url") or "").lower()
+            if typ_self == "iframe" and any(
+                x in url_self
+                for x in (
+                    "client.",
+                    "games.",
+                    "pragmaticplaylive",
+                    "/desktop/lobby",
+                    "/desktop/roulette",
+                    "/gs2c/",
+                    "/apps/lobby/",
+                )
+            ):
+                active_tid = (getattr(self, "session_targets", {}) or {}).get(
+                    str(getattr(self, "active_game_sid", "") or ""), ""
+                )
+                if getattr(self, "table_scan_tab_walk", False) or not active_tid or tid != active_tid:
+                    known_tids.add(tid)
+                    if root and tid not in getattr(self, "target_parent", {}):
+                        self.target_parent[tid] = root
+                    return True
+
         seen = set()
         cur = tid
         for _ in range(8):
@@ -11130,14 +11191,24 @@ class ChromeBridge(threading.Thread):
     def _close_table_scan_target(self):
         tids = []
         root = str(self.table_scan_target_id or "")
-        if root:
+        reused_tab = bool(getattr(self, "table_scan_reused_existing_tab", False))
+        page_count = sum(
+            1 for ti in (getattr(self, "target_info", {}) or {}).values()
+            if str((ti or {}).get("type") or "").lower() == "page"
+            and str((ti or {}).get("url") or "").startswith(("http://", "https://"))
+        )
+        if root and not reused_tab and page_count > 1:
             tids.append(root)
             getattr(self, "collector_known_target_ids", set()).add(root)
+        elif reused_tab:
+            getattr(self, "collector_known_target_ids", set()).clear()
+            getattr(self, "collector_known_session_ids", set()).clear()
         tids.extend(list(self.table_scan_probe_targets.keys()))
         for scan_sid in list(self.session_table_activity.keys()):
             if self._is_collector_session(scan_sid):
                 self.session_table_activity.pop(scan_sid, None)
         self.table_scan_target_id = ""
+        self.table_scan_reused_existing_tab = False
         self.table_scan_probe_targets = {}
         self.table_scan_probe_urls = set()
         self.table_scan_probe_queue = []
@@ -11201,6 +11272,50 @@ class ChromeBridge(threading.Thread):
         self.table_scan_position_alerts = []
         self.table_scan_closed_alerts = []
         self.table_scan_alert_seen = set()
+        self.table_scan_reused_existing_tab = False
+
+        # If a Pragmatic Play Lobby tab (3300922-real or /desktop/lobby) is
+        # ALREADY open in Chrome in tab-walk mode, reuse it immediately instead
+        # of opening a duplicate lobby tab!
+        existing_lobby_tid = ""
+        if getattr(self, "table_scan_tab_walk", False):
+            for cand_tid, cand_ti in list((getattr(self, "target_info", {}) or {}).items()):
+                c_typ = str((cand_ti or {}).get("type") or "").lower()
+                c_url = str((cand_ti or {}).get("url") or "").lower()
+                if c_typ == "page" and ("3300922-real" in c_url or "pragmatic%20play%20lobby" in c_url or "/desktop/lobby" in c_url):
+                    existing_lobby_tid = str(cand_tid)
+                    break
+
+        known_tids = getattr(self, "collector_known_target_ids", None)
+        if known_tids is None:
+            known_tids = set()
+            self.collector_known_target_ids = known_tids
+        known_sids = getattr(self, "collector_known_session_ids", None)
+        if known_sids is None:
+            known_sids = set()
+            self.collector_known_session_ids = known_sids
+
+        if existing_lobby_tid:
+            self.table_scan_target_id = existing_lobby_tid
+            self.table_scan_reused_existing_tab = True
+            known_tids.add(existing_lobby_tid)
+            if existing_lobby_tid in self.target_sessions:
+                known_sids.add(self.target_sessions[existing_lobby_tid])
+            for other_tid, other_ti in list((getattr(self, "target_info", {}) or {}).items()):
+                other_typ = str((other_ti or {}).get("type") or "").lower()
+                other_url = str((other_ti or {}).get("url") or "").lower()
+                if other_typ == "iframe" and any(
+                    x in other_url
+                    for x in ("client.", "games.", "pragmaticplaylive", "/desktop/lobby", "/desktop/roulette", "/gs2c/")
+                ):
+                    self.target_parent[other_tid] = existing_lobby_tid
+                    known_tids.add(other_tid)
+                    if other_tid in self.target_sessions:
+                        known_sids.add(self.target_sessions[other_tid])
+            with self.state.lock:
+                self.state.table_scan_status = status_text
+            return True
+
         self.send(
             "Target.createTarget",
             {
@@ -13030,7 +13145,6 @@ class ChromeBridge(threading.Thread):
 
                     if (
                         self.table_scan_enabled
-                        and self.table_scan_target_id
                         and self._is_collector_session(sid)
                         and (
                             self.is_table_scan_target(sid)
@@ -14158,6 +14272,23 @@ class ChromeBridge(threading.Thread):
                         known_tids = set()
                         self.collector_known_target_ids = known_tids
                     known_tids.add(tid)
+                    known_sids = getattr(self, "collector_known_session_ids", None)
+                    if known_sids is None:
+                        known_sids = set()
+                        self.collector_known_session_ids = known_sids
+                    if tid in self.target_sessions:
+                        known_sids.add(self.target_sessions[tid])
+                    for other_tid, other_ti in list(self.target_info.items()):
+                        other_typ = str((other_ti or {}).get("type") or "").lower()
+                        other_url = str((other_ti or {}).get("url") or "").lower()
+                        if other_typ == "iframe" and any(
+                            x in other_url
+                            for x in ("client.", "games.", "pragmaticplaylive", "/desktop/lobby", "/desktop/roulette", "/gs2c/")
+                        ):
+                            self.target_parent.setdefault(other_tid, tid)
+                            known_tids.add(other_tid)
+                            if other_tid in self.target_sessions:
+                                known_sids.add(self.target_sessions[other_tid])
                     ti = self.target_info.get(tid)
                     if ti:
                         self.attach_target(ti)
@@ -15886,6 +16017,16 @@ class App:
             pass
 
     def clear_past_tables_ui(self):
+        try:
+            from tkinter import messagebox
+            ok = messagebox.askyesno(
+                "Geçmiş Masa Verilerini Sil",
+                "Tüm kayıtlı Masa Bankası ve Ortak Havuz verilerini silmek istediğinize emin misiniz?"
+            )
+            if not ok:
+                return
+        except Exception:
+            pass
         self.state.clear_all_past_table_data()
         try:
             self.bridge.chrome_dga_enabled = False
