@@ -41,10 +41,10 @@ COLLECTOR_CARD_CLICK_SECONDS = 10.0
 TABLE_SCAN_AUTO_REFRESH_SECONDS = 600.0
 TAB_WALK_REFRESH_SECONDS = 300.0
 TAB_WALK_TABLE_TIMEOUT_SECONDS = 120.0
-TAB_WALK_TABLE_MIN_DWELL_SECONDS = 0.85
-TAB_WALK_NO_SON500_SKIP_SECONDS = 16.0
-TAB_WALK_EMPTY_SON500_SKIP_SECONDS = 18.0
-TAB_WALK_RETURN_GRACE_SECONDS = 8.0
+TAB_WALK_TABLE_MIN_DWELL_SECONDS = 4.0
+TAB_WALK_NO_SON500_SKIP_SECONDS = 6.0
+TAB_WALK_EMPTY_SON500_SKIP_SECONDS = 12.0
+TAB_WALK_RETURN_GRACE_SECONDS = 12.0
 TAB_WALK_BLOCKED_TABLE_LABELS = (
     "POWERUP", "POWER UP",
     "PRIVE LOUNGE", "PRIVÉ LOUNGE",
@@ -66,7 +66,7 @@ PRAGMATIC_LOBBY_TABLES = (
     {"order": 9, "name": "Rulet 3", "key": "RULET 3", "patterns": ("RULET 3", "ROULETTE 3"), "blocked": False},
     {"order": 10, "name": "Fransız Ruleti Geri Ödemeli", "key": "FRANSIZ RULETI GERI ODEMELI", "patterns": ("FRANSIZ RULETI GERI ODEMELI", "FRANSIZ RULETI", "FRENCH ROULETTE"), "blocked": False},
     {"order": 11, "name": "VIP Rulet", "key": "VIP RULET", "patterns": ("VIP RULET", "VIP ROULETTE"), "blocked": False},
-    {"order": 12, "name": "Hızlı Rulet 1", "key": "HIZLI RULET 1", "patterns": ("HIZLI RULET 1", "SPEED ROULETTE 1"), "blocked": False},
+    {"order": 12, "name": "Hızlı Rulet 1", "key": "HIZLI RULET 1", "patterns": ("HIZLI RULET 1", "SPEED ROULETTE 1", "HIZLI RULET", "SPEED ROULETTE"), "blocked": False},
     # Row 4 (image-2 second row)
     {"order": 13, "name": "Brezilya Portekizcesi Mega Rulet", "key": "BREZILYA PORTEKIZCESI MEGA RULET", "patterns": ("BREZILYA PORTEKIZCESI MEGA RULET", "BREZILYA PORTEKIZCESI MEGA", "MEGA ROLETA BRASIL", "BRAZILIAN MEGA ROULETTE"), "blocked": False},
     {"order": 14, "name": "Hızlı Rulet Latina", "key": "HIZLI RULET LATINA", "patterns": ("HIZLI RULET LATINA", "SPEED ROULETTE LATINA"), "blocked": False},
@@ -8770,32 +8770,9 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   const PY_CLICK_CARDS = {click_cards_json};
   const visible = el => {{
     if (!el) return false;
-    try {{
-      const r=el.getBoundingClientRect(), s=getComputedStyle(el);
-      return r.width>2 && r.height>2 && s.display!=='none' && s.visibility!=='hidden';
-    }} catch (_) {{ return false; }}
+    const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+    return r.width>2 && r.height>2 && s.display!=='none' && s.visibility!=='hidden';
   }};
-  function deepQueryAll(root, selector) {{
-    const out = [];
-    const seenRoots = new Set();
-    function walk(r) {{
-      if (!r || seenRoots.has(r)) return;
-      seenRoots.add(r);
-      try {{
-        for (const n of r.querySelectorAll(selector)) out.push(n);
-      }} catch (_) {{}}
-      try {{
-        for (const el of r.querySelectorAll('*')) {{
-          try {{ if (el.shadowRoot) walk(el.shadowRoot); }} catch (_) {{}}
-          try {{
-            if (String(el.tagName || '').toUpperCase() === 'IFRAME' && el.contentDocument) walk(el.contentDocument);
-          }} catch (_) {{}}
-        }}
-      }} catch (_) {{}}
-    }}
-    walk(root);
-    return out;
-  }}
   const clickable = el => {{
     let p=el;
     for(let i=0;i<7 && p;i++,p=p.parentElement) {{
@@ -8811,18 +8788,12 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   const host=String(location.hostname||'').toLowerCase();
   const path=String(location.pathname||'').toLowerCase();
   const bodyText=norm(document.body && document.body.innerText || '');
-  const lobbyTileElements = deepQueryAll(
-    document,
-    '[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]'
-  ).filter(visible);
   const providerContext = host.startsWith('games.')
     || host.startsWith('client.')
     || path.includes('/apps/lobby/')
     || path.includes('/desktop/roulette')
-    || path.includes('/desktop/lobby')
-    || norm(title).includes('PRAGMATIC PLAY LOBBY')
-    || lobbyTileElements.length >= 2
-    || !!matchCanonicalTable(bodyText);
+    || path.includes('/desktop/')
+    || norm(title).includes('PRAGMATIC PLAY LOBBY');
 
   function hoverAndClick(el) {{
     if (!el) return false;
@@ -8908,15 +8879,8 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     return null;
   }}
 
-  const isPragmaticHost = host.includes('pragmaticplaylive.net')
-    || host.startsWith('client.')
-    || host.startsWith('games.')
-    || path.includes('/apps/lobby/')
-    || path.includes('/desktop/')
-    || path.includes('/gs2c/html5Game.do');
-  if (!isPragmaticHost) {{
-    const lowHref = String(href || '').toLowerCase();
-    if (lowHref.includes('opengames=3300922-real') || document.querySelectorAll('iframe').length > 0) {{
+  if (!providerContext) {{
+    if (String(href || '').toLowerCase().includes('opengames=3300922-real')) {{
       return {{ok:true,mode:'waiting',stage:'outer-wrapper-frame',title,url:href}};
     }}
     const launched=operatorLobbyLauncher();
@@ -8924,10 +8888,9 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     return {{ok:true,mode:'waiting',stage:'provider-context',title,url:href}};
   }}
 
-  const visibleControls = deepQueryAll(
-    document,
-    'button,a,[role="button"],[tabindex],li,nav *,aside *,div,span,p,h1,h2,h3'
-  ).filter(visible);
+  const visibleControls=Array.from(document.querySelectorAll(
+    'button,a,[role="button"],[tabindex],div,span'
+  )).filter(visible);
 
   // V2.9.42: if a real game overlay is visible, stop before the
   // generic lobby/card scanner. Some operators keep the lobby DOM behind the
@@ -8950,12 +8913,11 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       el.getAttribute && el.getAttribute('title'),
       el.getAttribute && el.getAttribute('data-testid')
     ].join(' '));
-    return /\b(LOBI|LOBBY)\b/.test(t) && r.top <= innerHeight * 0.28 && r.left >= innerWidth * 0.45;
+    return /\b(LOBI|LOBBY)\b/.test(t) && r.top <= innerHeight * 0.28 && r.left >= innerWidth * 0.45 && r.width <= 220 && r.height <= 95;
   }});
-  const lobbyTileCount = lobbyTileElements.length;
-  const activeGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|BAKIYE|BALANCE|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|KAZANCI|WINNINGS|JEU\s*0|VOISINS|ORPHELINS|TIERS|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY/.test(bodyText);
+  const activeGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|KAZANCI|WINNINGS|JEU\s*0|VOISINS|ORPHELINS|TIERS|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY/.test(bodyText);
   const blockedActiveTable = blockedLabel(title + ' ' + bodyText);
-  const gameOverlayLikely = lobbyTileCount < 2 && (hasInGameLobbyButton || (hasSon500Control && /BAKIYE|BALANCE|OTOMATIK|AUTOMATIC|BAHIS|BET|SICAK|HOT|VOISINS|TIERS|ORPHELINS|JEU/.test(bodyText)));
+  const gameOverlayLikely = hasInGameLobbyButton || (hasSon500Control && activeGameUi);
   if (gameOverlayLikely) {{
     if (blockedActiveTable) {{
       return {{
@@ -8986,43 +8948,21 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }}
   }}
 
-  // If we are in the lobby and a floating mini-player bar ("Şimdi oynanıyor / Oyuna dön > | ✕")
-  // is open at the bottom-right from the previous table, hover it and close its ✕ button immediately.
-  if (lobbyTileCount >= 2) {{
-    for (const el of visibleControls) {{
-      const t = norm(el.innerText || el.textContent || '');
-      if (!/SIMDI\s+OYNANIYOR|OYUNA\s+DON|NOW\s+PLAYING|RETURN\s+TO\s+GAME/.test(t)) continue;
-      let box = el;
-      for (let k = 0; k < 5 && box && box.parentElement; k++, box = box.parentElement) {{
-        const br = box.getBoundingClientRect();
-        if (br.top >= innerHeight * 0.60 && br.width >= 160 && br.height <= 160) {{
-          try {{
-            for (const evType of ['pointerover','mouseover','mouseenter','mousemove']) {{
-              box.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:Math.round(br.right - 14), clientY:Math.round(br.top + 14)}}));
-            }}
-          }} catch (_) {{}}
-          const btns = Array.from(box.querySelectorAll('button,a,[role="button"],svg,[class*="close" i]')).filter(b => {{
-            const bt = norm(b.innerText || b.textContent || '');
-            return !/OYUNA\s+DON|RETURN\s+TO\s+GAME/.test(bt);
-          }});
-          btns.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-          const closeHit = btns[0] && (clickable(btns[0]) || btns[0]);
-          if (closeHit && closeHit.getBoundingClientRect().left >= br.left + br.width * 0.65) {{
-            try {{ closeHit.click(); }} catch (_) {{}}
-          }}
-          break;
-        }}
-      }}
-    }}
-  }}
+  const categoryLabels=new Set(['RULET','ROULETTE','RULET MASALARI','ROULETTE TABLES']);
+  const category=visibleControls.map(el => {{
+    const label=norm(el.innerText || el.textContent);
+    const hit=clickable(el);
+    if (!hit || !visible(hit) || !categoryLabels.has(label)) return null;
+    if (el.closest('[data-testid*="tile" i],[class*="tile" i],[class*="card" i]')) return null;
+    return hit;
+  }}).find(Boolean);
 
   const scanState=window.__rouletteLobbyScanState
     || (window.__rouletteLobbyScanState={{
       menuAttemptAt:0,
       categoryAttemptAt:0,
       categoryAttempts:0,
-      categoryFirstSeenAt:0,
-      rouletteRoomEntered:false
+      categoryFirstSeenAt:0
     }});
   const selected=el => {{
     if (!el) return false;
@@ -9034,138 +8974,65 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       || /(^|[\s_-])(active|selected|current|checked)([\s_-]|$)/i.test(cls);
   }};
 
-  const categoryLabels=new Set(['RULET','ROULETTE','RULET MASALARI','ROULETTE TABLES']);
-  const sidebarCandidates = visibleControls.map(el => {{
-    const label = norm(el.innerText || el.textContent || '');
-    const aria = norm([
-      el.getAttribute && el.getAttribute('aria-label'),
-      el.getAttribute && el.getAttribute('title'),
-      el.getAttribute && el.getAttribute('data-testid')
-    ].join(' '));
-    if (!categoryLabels.has(label) && !/\b(RULET|ROULETTE)\b/.test(aria)) return null;
-    if (el.closest && el.closest('[data-testid*="tile" i],[class*="tile" i],[class*="card" i]')) return null;
-    const r = el.getBoundingClientRect();
-    if (r.left > Math.max(280, window.innerWidth * 0.30) || r.top < 70 || r.width > 300 || r.height > 95) return null;
-    const hit = clickable(el) || (el.closest && el.closest('li,a,button,[role="button"],[tabindex]')) || el.parentElement || el;
-    const exactScore = categoryLabels.has(label) ? 200 : 80;
-    return {{el, hit, score: exactScore - r.left - Math.abs(r.height - 36)}};
-  }}).filter(Boolean).sort((a, b) => b.score - a.score);
-  const category = sidebarCandidates[0] ? sidebarCandidates[0].hit : null;
-  const categoryEl = sidebarCandidates[0] ? sidebarCandidates[0].el : null;
-
-  // Detect whether we are inside the dedicated "Rulet" room vs still on the
-  // "Size Özel" (For You) landing page of Pragmatic Play Lobby.
-  // Never rely on bodyText containing "BLACKJACK"/"BACCARAT"/"SIZE OZEL" alone,
-  // because the collapsed left sidebar keeps those labels in document.body.innerText!
-  const fullDomText = norm(document.body && document.body.textContent || '');
-  const hasRouletteFilterPills = /\b(STANDART|STANDARD)\b/.test(bodyText + ' ' + fullDomText)
-    && /\b(ANA\s*DILINIZDE|VERSIYONLAR|VERSIONS|OTOMATIK|AUTO|INGILIZCE|TURKCE)\b/.test(bodyText + ' ' + fullDomText);
-  const hasRouletteOnlyTables = /\b(TURKCE\s+RULET|TURKCE\s+MEGA\s+RULET|BREZILYA\s+PORTEKIZCESI\s+RULET|RULET\s+2\s+EXTRA\s+TIME|RULET\s+MACAO|HIZLI\s+RULET\s+2|FRANSIZ\s+RULETI|KRISTAL\s+RULET|ALMANCA\s+RULET|RUSCA\s+RULET|RUMENCE\s+RULET|KORECE\s+RULET)\b/.test(bodyText + ' ' + fullDomText);
-  const hasTopRouletteHeader = visibleControls.some(el => {{
-    const r = el.getBoundingClientRect();
-    const t = norm(el.innerText || '');
-    return (t === 'RULET' || t === 'ROULETTE') && r.top <= 105 && r.left >= 55 && r.left <= 260 && r.height <= 70;
-  }});
-  const hasHomeBannerOrRecent = /\bSON\s+OYNANAN\s+OYUNLAR\b|\bRECENTLY\s+PLAYED\b|\bONE\s+BLACKJACK\b|\bSWEET\s+BONANZA\b|\bMEGA\s+WHEEL\b/.test(bodyText);
-
-  if (hasRouletteFilterPills || hasRouletteOnlyTables || hasTopRouletteHeader || ((selected(categoryEl) || selected(category)) && !hasHomeBannerOrRecent)) {{
-    scanState.rouletteRoomEntered = true;
-  }} else if (hasHomeBannerOrRecent && !hasRouletteFilterPills && !hasRouletteOnlyTables) {{
-    scanState.rouletteRoomEntered = false;
-  }}
-
-  const inRouletteRoom = (
-    hasRouletteFilterPills
-    || hasRouletteOnlyTables
-    || hasTopRouletteHeader
-    || (!hasHomeBannerOrRecent && (
-      !!scanState.rouletteRoomEntered
-      || selected(categoryEl)
-      || selected(category)
-      || (PY_CLICKED_KEYS.size > 0 && lobbyTileCount >= 2)
-    ))
-    || (Number(scanState.categoryAttempts || 0) >= 2 && lobbyTileCount >= 2)
-  );
-
-  let categoryState = inRouletteRoom ? 'selected' : 'missing';
-  if (!inRouletteRoom) {{
-    if (category || categoryEl) {{
+  let categoryState = 'missing';
+  if (category) {{
+    if (selected(category)) {{
+      categoryState = 'selected';
+    }} else {{
       categoryState = 'unconfirmed';
       if (!scanState.categoryFirstSeenAt) scanState.categoryFirstSeenAt = Date.now();
-      if (Date.now() - scanState.categoryAttemptAt >= 850) {{
+      if (Date.now()-scanState.categoryAttemptAt>=3500 && (scanState.categoryAttempts||0) < 4) {{
         try {{
-          const targetEl = categoryEl || category;
-          const r = targetEl.getBoundingClientRect();
-          const cx = Math.round(r.left + r.width * 0.5);
-          const cy = Math.round(r.top + r.height * 0.5);
-          const clickNodes = [];
-          const ptEl = document.elementFromPoint ? document.elementFromPoint(cx, cy) : null;
-          if (ptEl) clickNodes.push(ptEl);
-          let p = categoryEl || category;
-          for (let k = 0; k < 4 && p && p !== document.body; k++, p = p.parentElement) {{
-            const pr = p.getBoundingClientRect();
-            if (pr.height <= 85 && pr.width <= 320 && !clickNodes.includes(p)) {{
-              clickNodes.push(p);
-            }}
-          }}
-          if (category && !clickNodes.includes(category)) clickNodes.push(category);
-          for (const node of clickNodes) {{
-            if (!node) continue;
-            for (const evType of ['pointerover','mouseover','mouseenter','mousemove','pointerdown','mousedown','pointerup','mouseup']) {{
-              try {{
-                node.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
-              }} catch (_) {{}}
-            }}
-            try {{ node.click(); }} catch (_) {{}}
-          }}
-          scanState.categoryAttemptAt = Date.now();
-          scanState.categoryAttempts = (scanState.categoryAttempts || 0) + 1;
+          category.click();
+          scanState.categoryAttemptAt=Date.now();
+          scanState.categoryAttempts=(scanState.categoryAttempts||0)+1;
         }} catch (e) {{
           return {{ok:false,mode:'waiting',stage:'roulette-click-failed',reason:String(e)}};
         }}
+        return {{
+          ok:true,mode:'navigating',stage:'roulette-selecting',
+          attempts:scanState.categoryAttempts,title,url:href
+        }};
       }}
-      // Do NOT fall through to card clicking while still on "Size Özel"; wait for
-      // the "Rulet" room to open first!
-      return {{
-        ok:true,mode:'navigating',stage:'roulette-selecting',
-        attempts:scanState.categoryAttempts,title,url:href
-      }};
-    }} else if (Date.now()-scanState.menuAttemptAt>=2000) {{
-      const menuWords=/MENU|CATEGORY|CATEGORIES|SIDEBAR|DRAWER|EXPAND|COLLAPSE|NAVIGATION|ARROW|CHEVRON/;
-      const arrows=visibleControls.map(el => {{
-        const hit=clickable(el) || el;
-        if (!hit || !visible(hit)) return null;
-        const r=hit.getBoundingClientRect();
-        if (r.left > Math.max(150,window.innerWidth*0.18) || r.width>100 || r.height>100) return null;
-        const meta=norm([
-          hit.getAttribute && hit.getAttribute('aria-label'),
-          hit.getAttribute && hit.getAttribute('title'),
-          hit.getAttribute && hit.getAttribute('data-testid'),
-          hit.id,
-          typeof hit.className==='string'?hit.className:''
-        ].join(' '));
-        const icon=hit.querySelector && hit.querySelector('svg,[class*="arrow" i],[class*="chevron" i]');
-        const text=norm(hit.innerText || hit.textContent);
-        if (!menuWords.test(meta) && !(icon && !text)) return null;
-        return {{hit,score:(menuWords.test(meta)?100:0)+(icon?20:0)-r.left}};
-      }}).filter(Boolean).sort((a,b)=>b.score-a.score);
-      if (arrows.length) {{
-        try {{
-          arrows[0].hit.click();
-          scanState.menuAttemptAt=Date.now();
-        }} catch (e) {{
-          return {{ok:false,mode:'waiting',stage:'menu-click-failed',reason:String(e)}};
-        }}
-        return {{ok:true,mode:'navigating',stage:'menu-opened',title,url:href}};
-      }}
+      // Some Pragmatic lobby builds never mark the category as selected.
+      // After a few clicks, continue with visible roulette cards instead of
+      // getting stuck forever in "roulette-selecting".
     }}
-    return {{ok:true,mode:'navigating',stage:'roulette-selecting',title,url:href}};
+  }} else if (Date.now()-scanState.menuAttemptAt>=5000) {{
+    const menuWords=/MENU|CATEGORY|CATEGORIES|SIDEBAR|DRAWER|EXPAND|COLLAPSE|NAVIGATION|ARROW|CHEVRON/;
+    const arrows=visibleControls.map(el => {{
+      const hit=clickable(el);
+      if (!hit || !visible(hit)) return null;
+      const r=hit.getBoundingClientRect();
+      if (r.left > Math.max(150,window.innerWidth*0.18) || r.width>100 || r.height>100) return null;
+      const meta=norm([
+        hit.getAttribute('aria-label'),hit.getAttribute('title'),
+        hit.getAttribute('data-testid'),hit.id,
+        typeof hit.className==='string'?hit.className:''
+      ].join(' '));
+      const icon=hit.querySelector('svg,[class*="arrow" i],[class*="chevron" i]');
+      const text=norm(hit.innerText || hit.textContent);
+      if (!menuWords.test(meta) && !(icon && !text)) return null;
+      return {{hit,score:(menuWords.test(meta)?100:0)+(icon?20:0)-r.left}};
+    }}).filter(Boolean).sort((a,b)=>b.score-a.score);
+    if (arrows.length) {{
+      try {{
+        arrows[0].hit.click();
+        scanState.menuAttemptAt=Date.now();
+      }} catch (e) {{
+        return {{ok:false,mode:'waiting',stage:'menu-click-failed',reason:String(e)}};
+      }}
+      return {{ok:true,mode:'navigating',stage:'menu-opened',title,url:href}};
+    }}
   }}
 
   const cards=[];
   const cardHits=[];
+  const closedTables=[];
+  const seenClosedKeys=new Set();
   const seen=new Set();
   const badCardText=/TOURNAMENT|HISTORY|SON 500|LAST 500|BLACKJACK|BACCARAT|POKER|AUTO PLAY|OTOMATIK OYUN|BAHIS|BET|CHIP|ÇIP|SIMDI OYNANIYOR|ŞİMDİ OYNANIYOR|OYUNA DON|OYUNA DÖN|NOW PLAYING|RETURN TO GAME/;
+  const closedCardRe=/\b(MASA\s+KAPALI|KAPALI|TABLE\s+CLOSED|CLOSED|BAKIMDA|MAINTENANCE|OFFLINE)\b/;
   function attrAny(el,names) {{
     for (const n of names) {{
       try {{
@@ -9201,272 +9068,135 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   const tileSelector=[
     '[data-gameid]','[data-game-id]','[data-table-id]','[data-tableid]',
     '[data-testid="wow-tile"]','[data-testid*="tile" i]',
-    '[data-testid*="table" i]','[class*="tile" i]'
+    '[data-testid*="game" i]','[data-testid*="table" i]',
+    '[class*="tile" i]','[class*="card" i]','[class*="game" i]'
   ].join(',');
-  let candidates=deepQueryAll(document, tileSelector);
-  if (!candidates.length) {{
-    candidates=deepQueryAll(document, '[class*="card" i],[class*="game" i],a,div,span');
-  }}
+  const candidates=Array.from(document.querySelectorAll(tileSelector));
+  if (!candidates.length) candidates.push(...Array.from(document.querySelectorAll('a,button,[role="button"],div,span')));
 
   const rouletteHeading=Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]'))
     .some(el => visible(el) && /^(RULET|ROULETTE)$/.test(norm(el.innerText || el.textContent)));
   const rouletteContext = rouletteHeading
     || categoryState === 'selected'
-    || ((path.includes('/apps/lobby/') || path.includes('/desktop/roulette') || host.startsWith('client.')) && /\b(RULET|ROULETTE)\b/.test(bodyText))
-    || lobbyTileCount >= 2;
+    || ((path.includes('/apps/lobby/') || path.includes('/desktop/roulette') || host.startsWith('client.')) && /\b(RULET|ROULETTE)\b/.test(bodyText));
 
-  function findCardBox(el) {{
-    if (!el) return null;
-    if (el.closest) {{
-      const wow = el.closest('[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]');
-      if (wow && visible(wow)) {{
-        const wr = wow.getBoundingClientRect();
-        if (wr.width >= 75 && wr.width <= 490 && wr.height >= 60 && wr.height <= 450) {{
-          return wow;
-        }}
-      }}
-    }}
-    let p = el;
-    for (let i = 0; i < 8 && p && p !== document.body; i++, p = p.parentElement) {{
-      if (!visible(p)) continue;
-      const r = p.getBoundingClientRect();
-      if (r.width >= 85 && r.width <= 470 && r.height >= 65 && r.height <= 430) {{
-        return p;
-      }} else if (r.width > 500 || r.height > 460) {{
-        break;
-      }}
-    }}
-    return null;
+  function findCardBox(raw) {{
+    return (raw && raw.closest && raw.closest(tileSelector)) || raw;
   }}
-
   function extractCleanTableTitle(tile, rawFallback) {{
-    const rawStr = String(tile.innerText || tile.textContent || rawFallback || '');
-    const canon = matchCanonicalTable(rawStr);
+    const canon = matchCanonicalTable(rawFallback || '');
     if (canon) return canon.name;
-    const lines = rawStr
-      .split(/[\r\n]+/)
-      .map(s => norm(s))
-      .filter(Boolean);
-    for (let idx = 0; idx < lines.length; idx++) {{
-      let ln = lines[idx];
-      if (!/(ROULETTE|RULET|ROLETA)/.test(ln)) continue;
-      if (idx + 1 < lines.length && /^(?:[0-9]{{1,3}}|VIP|AZURE|RUBY|MACAO|ITALIANA|THE\s*CLUB)$/.test(lines[idx + 1])) {{
-        ln = (ln + ' ' + lines[idx + 1]).trim();
-      }}
-      let cleaned = ln
-        .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
-        .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
-        .trim();
-      if (cleaned.length >= 4 && /(ROULETTE|RULET|ROLETA)/.test(cleaned)) return cleaned.slice(0, 120);
-    }}
-    let full = norm(rawStr)
-      .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
-      .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const m = full.match(/([A-Z0-9 ._-]{{0,32}}(?:ROULETTE|RULET|ROLETA)[A-Z0-9 ._-]{{0,32}})/);
-    if (m && m[1].trim().length >= 4) return m[1].trim().slice(0, 120);
-    return full.slice(0, 120);
+    return norm(rawFallback || '').slice(0, 260);
   }}
-
-  function cardImageSignature(tile) {{
-    if (!tile || !tile.querySelector) return '';
-    try {{
-      const img = tile.querySelector('img[src]');
-      if (img && img.src) {{
-        const u = new URL(img.src, location.href);
-        const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
-        if (seg) return seg.toUpperCase().slice(0, 64);
-      }}
-    }} catch (_) {{}}
-    return '';
-  }}
-
-  function clickCardThumbnail(tile) {{
-    if (!tile) return false;
-    const isHeartEl = el => {{
-      if (!el) return false;
-      const tr = tile.getBoundingClientRect();
-      let p = el;
-      for (let i = 0; i < 5 && p && p !== tile; i++, p = p.parentElement) {{
-        const meta = norm([
-          p.getAttribute && p.getAttribute('aria-label'),
-          p.getAttribute && p.getAttribute('title'),
-          p.getAttribute && p.getAttribute('data-testid'),
-          typeof p.className === 'string' ? p.className : ''
-        ].join(' '));
-        if (/FAV|HEART|LIKE|BOOKMARK|WISH/.test(meta)) return true;
-        const pr = p.getBoundingClientRect();
-        if (pr.width < 52 && pr.height < 52 && pr.top > tr.top + tr.height * 0.60 && pr.left > tr.left + tr.width * 0.65) {{
-          return true;
-        }}
-      }}
-      return false;
-    }};
-
-    let innerHit = null;
-    try {{
-      const innerCandidates = Array.from(tile.querySelectorAll('a,button,[role="button"],img,div')).filter(el => visible(el) && !isHeartEl(el));
-      innerHit = innerCandidates.find(el => {{
-        const r = el.getBoundingClientRect();
-        const tr = tile.getBoundingClientRect();
-        return r.width >= tr.width * 0.45 && r.height >= tr.height * 0.35;
-      }}) || null;
-    }} catch (_) {{}}
-    let hit = innerHit || tile;
-    if (isHeartEl(hit)) hit = tile;
-    try {{
-      const r = tile.getBoundingClientRect();
-      const cx = Math.round(r.left + r.width * 0.48);
-      const cy = Math.round(r.top + r.height * 0.36);
-      for (const target of [hit, tile]) {{
-        if (!target) continue;
-        for (const evType of ['pointerover','mouseover','mouseenter','mousemove','pointerdown','mousedown','pointerup','mouseup']) {{
-          target.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
-        }}
-      }}
-    }} catch (_) {{}}
-    try {{
-      hit.click();
-      if (hit !== tile) {{
-        try {{ tile.click(); }} catch (_) {{}}
-      }}
-      return true;
-    }} catch (_) {{
-      try {{ tile.click(); return true; }} catch (__) {{ return false; }}
-    }}
+  function clickCardThumbnail(hit) {{
+    if (!hit) return false;
+    try {{ hit.scrollIntoView({{block:'center', inline:'center'}}); }} catch (_) {{}}
+    try {{ hit.click(); return true; }} catch (_) {{ return false; }}
   }}
 
   const rawCardItems = [];
-  const closedTables = [];
-  const seenClosedKeys = new Set();
-  const seenTiles = new Set();
-  const seenBoxes = [];
-  const closedCardRe = /\b(MASA\s+KAPALI|KAPALI|TABLE\s+CLOSED|CLOSED|BAKIMDA|MAINTENANCE|OFFLINE)\b/;
   for (const raw of candidates.slice(0,3500)) {{
     if (!visible(raw)) continue;
     const tile = findCardBox(raw);
-    if (!tile || !visible(tile) || seenTiles.has(tile)) continue;
-    const rect = tile.getBoundingClientRect();
-    if (seenBoxes.some(b => Math.abs(b.left - rect.left) < 24 && Math.abs(b.top - rect.top) < 24)) continue;
+    if (!visible(tile)) continue;
 
     let tableId=firstAttrInTree(tile, ['data-table-id','data-tableid','tableid','table-id','data-table_id']);
     let gameId=firstAttrInTree(tile, ['data-gameid','data-game-id','gameid','game-id','data-game_id']);
-    const rawTileText = [
-      tile.innerText, tile.textContent,
+    const text=norm([
+      tile.innerText,tile.textContent,raw.innerText,raw.textContent,
       tile.getAttribute && tile.getAttribute('aria-label'),
       tile.getAttribute && tile.getAttribute('title')
-    ].join('\n');
-    const text = norm(rawTileText);
-    if ((!text && !tableId && !gameId) || text.length>420) continue;
-    if (badCardText.test(text)) continue;
-
-    const canon = matchCanonicalTable(rawTileText);
+    ].join(' '));
+    const canon = matchCanonicalTable(text);
     if (canon && canon.blocked) continue;
+    const textLooksRoulette=/(ROULETTE|RULET)/.test(text) || !!canon;
+    if ((!text && !tableId && !gameId) || text.length>520) continue;
     if (blockedLabel(text)) continue;
-
-    const textLooksRoulette = !!canon || /(ROULETTE|RULET|ROLETA)/.test(text);
     if (!textLooksRoulette && !(rouletteContext && (tableId || gameId))) continue;
+    if (badCardText.test(text)) continue;
+    if (categoryLabels.has(text)) continue;
 
-    let cleanTitle = canon ? canon.name : extractCleanTableTitle(tile, text);
-    if (blockedLabel(cleanTitle)) continue;
-    if (!canon && !/(ROULETTE|RULET|ROLETA)/.test(norm(cleanTitle)) && !(rouletteContext && (gameId || tableId))) continue;
-    if (badCardText.test(norm(cleanTitle))) continue;
+    const hit=clickable(tile) || tile;
+    if (!hit || !visible(hit)) continue;
+    let label=extractCleanTableTitle(tile, [
+      hit.innerText,hit.textContent,text,
+      hit.getAttribute && hit.getAttribute('aria-label'),
+      hit.getAttribute && hit.getAttribute('title')
+    ].join(' '));
+    if (blockedLabel(label)) continue;
+    if (!/(ROULETTE|RULET)/.test(norm(label)) && !canon && !(rouletteContext && (gameId || tableId))) continue;
+    if (badCardText.test(norm(label))) continue;
 
     if (closedCardRe.test(text)) {{
-      const closedKey = canon ? canon.key : norm(cleanTitle);
+      const closedKey = canon ? canon.key : norm(label);
       if (closedKey && !seenClosedKeys.has(closedKey)) {{
         seenClosedKeys.add(closedKey);
-        closedTables.push({{
-          key: closedKey,
-          label: cleanTitle || closedKey,
-          expectedOrder: canon ? canon.order : 0
-        }});
+        closedTables.push({{key:closedKey, label:label || closedKey}});
       }}
-      seenTiles.add(tile);
-      seenBoxes.push(rect);
       continue;
     }}
 
-    let cardHref = hrefOf(tile);
-    const testid = String(tile.getAttribute && tile.getAttribute('data-testid') || '');
+    let cardHref=hrefOf(hit) || hrefOf(tile);
+    const testid=String(hit.getAttribute && hit.getAttribute('data-testid') || tile.getAttribute && tile.getAttribute('data-testid') || '');
+    tableId = tableId || firstAttrInTree(hit, ['data-table-id','data-tableid','tableid','table-id','data-table_id']);
+    gameId = gameId || firstAttrInTree(hit, ['data-gameid','data-game-id','gameid','game-id','data-game_id']);
+
     if (cardHref) {{
       try {{
-        const u = new URL(cardHref, location.href);
+        const u=new URL(cardHref,location.href);
         tableId = tableId || u.searchParams.get('tableId') || u.searchParams.get('table_id') || '';
         gameId = gameId || u.searchParams.get('gameId') || u.searchParams.get('game_id') || u.searchParams.get('openGames') || '';
         cardHref = u.toString();
       }} catch (_) {{}}
     }}
 
-    if (!cleanTitle && (gameId || tableId)) cleanTitle = 'ROULETTE ' + (gameId || tableId);
-    const imgSig = cardImageSignature(tile);
-    const key = canon
-      ? canon.key
-      : (tableId || gameId || (norm(cleanTitle) + (imgSig ? '|' + imgSig : ''))).slice(0, 200);
-    if (!key) continue;
-    seenTiles.add(tile);
-    seenBoxes.push(rect);
+    if (!label && (gameId || tableId)) label = 'ROULETTE ' + (gameId || tableId);
+    if (!/(ROULETTE|RULET)/.test(norm(label)) && rouletteContext && gameId) {{
+      label = ('ROULETTE ' + gameId + ' ' + label).trim().slice(0,260);
+    }}
+
+    const key=(tableId || gameId || cardHref || (canon ? canon.key : norm(label))+'|'+testid).slice(0,420);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
     rawCardItems.push({{
       key,
-      label: cleanTitle,
-      canonOrder: canon ? canon.order : 999,
-      href: cardHref,
+      label,
+      href:cardHref,
       testid,
-      table_id: tableId,
-      game_id: gameId,
-      tile,
-      rect
+      table_id:tableId,
+      game_id:gameId,
+      hit,
+      rect:hit.getBoundingClientRect()
     }});
   }}
 
-  // Sort strictly by live visual grid position on screen (row-by-row top to bottom,
-  // column-by-column left to right) so dynamic table position changes or closed
-  // tables never cause the scanner to jump or scroll backwards!
   rawCardItems.sort((a, b) => {{
     const rowTol = Math.max(22, Math.min(a.rect.height, b.rect.height) * 0.45);
-    if (Math.abs(a.rect.top - b.rect.top) > rowTol) {{
-      return a.rect.top - b.rect.top;
-    }}
+    if (Math.abs(a.rect.top - b.rect.top) > rowTol) return a.rect.top - b.rect.top;
     return a.rect.left - b.rect.left;
   }});
 
-  const titleCounts = new Map();
   for (const item of rawCardItems) {{
-    const dupIdx = (titleCounts.get(item.key) || 0) + 1;
-    titleCounts.set(item.key, dupIdx);
-    const isCanon = item.canonOrder < 999;
-    const uniqueKey = (!isCanon && !item.table_id && dupIdx > 1) ? (item.key + ' #' + dupIdx) : item.key;
-    const uniqueLabel = (!isCanon && !item.table_id && dupIdx > 1) ? (item.label + ' #' + dupIdx) : item.label;
-    if (seen.has(uniqueKey)) continue;
-    seen.add(uniqueKey);
-    const liveVisualRank = cards.length + 1;
     cards.push({{
-      key: uniqueKey,
-      label: uniqueLabel,
-      order: item.canonOrder,
-      visualRank: liveVisualRank,
-      href: item.href,
-      testid: item.testid,
-      table_id: item.table_id,
-      game_id: item.game_id
+      key:item.key,
+      label:item.label,
+      href:item.href,
+      testid:item.testid,
+      table_id:item.table_id,
+      game_id:item.game_id
     }});
     cardHits.push({{
-      key: uniqueKey,
-      label: uniqueLabel,
-      order: item.canonOrder,
-      visualRank: liveVisualRank,
-      hit: item.tile,
-      rect: item.rect
+      key:item.key,
+      label:item.label,
+      hit:item.hit
     }});
   }}
 
   if (!scanState.clickedKeys) scanState.clickedKeys = {{}};
   const nowMs = Date.now();
-  const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 420;
+  const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 700;
+  const unclickedCards = cardHits.filter(c => !PY_CLICKED_KEYS.has(c.key) && !scanState.clickedKeys[c.key]);
 
-  // If the "Masa dolu" (Table full) modal from a VIP/Privé table is open on screen,
-  // dismiss it by clicking "Tamam" / "OK" and skip that card without stopping the scan.
   if (/\bMASA\s+DOLU\b|\bBU\s+OZEL\s+MASA\s+SU\s+ANDA\s+DOLU\b|\bTABLE\s+FULL\b/.test(bodyText)) {{
     const okBtns = Array.from(document.querySelectorAll('button,[role="button"],div,span')).filter(el => {{
       if (!visible(el)) return false;
@@ -9488,131 +9218,70 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }};
   }}
 
-  const isCardClicked = c =>
-    PY_CLICKED_KEYS.has(c.key)
-    || PY_CLICKED_KEYS.has(norm(c.key))
-    || PY_CLICKED_KEYS.has(c.label)
-    || PY_CLICKED_KEYS.has(norm(c.label));
-  const unclickedCards = cardHits.filter(c => !isCardClicked(c));
-
-  const scrollCandidates=[];
-  if (cardHits.length && cardHits[0].hit) {{
-    let p = cardHits[0].hit.parentElement;
-    while (p && p !== document.body && p !== document.documentElement) {{
-      if (p.scrollHeight > p.clientHeight + 10 && p.clientHeight > 100) {{
-        scrollCandidates.push(p);
+  if (PY_CLICK_CARDS && cardHits.length && clickReady) {{
+    const next = unclickedCards[0] || null;
+    if (next) {{
+      scanState.clickedKeys[next.key] = nowMs;
+      scanState.lastCardClickAt = nowMs;
+      try {{
+        try {{ performance.clearResourceTimings(); }} catch (_) {{}}
+        clickCardThumbnail(next.hit);
+        return {{
+          ok:true,
+          mode:'card_clicked',
+          stage:'card-clicked',
+          clickedKey:next.key,
+          clickedLabel:next.label,
+          cards,
+          closedTables,
+          title,url:href
+        }};
+      }} catch (e) {{
+        return {{
+          ok:false,
+          mode:'provider_lobby',
+          stage:'card-click-failed',
+          clickedKey:next.key,
+          clickedLabel:next.label,
+          reason:String(e),
+          cards,
+          closedTables,
+          title,url:href
+        }};
       }}
-      p = p.parentElement;
     }}
   }}
-  const root=document.scrollingElement || document.documentElement || document.body;
-  if (root && root.scrollHeight>root.clientHeight+12 && !scrollCandidates.includes(root)) scrollCandidates.push(root);
+
+  const scrollCandidates=[];
+  const root=document.scrollingElement;
+  if (root && root.scrollHeight>root.clientHeight+12) scrollCandidates.push(root);
   for (const el of Array.from(document.querySelectorAll('*')).slice(0,2500)) {{
-    if (scrollCandidates.includes(el)) continue;
+    if (el===root) continue;
     const style=getComputedStyle(el);
     const r=el.getBoundingClientRect();
-    if ((style.overflowY==='auto' || style.overflowY==='scroll' || style.overflowY==='overlay')
+    if ((style.overflowY==='auto' || style.overflowY==='scroll')
         && el.scrollHeight>el.clientHeight+12 && r.width>120 && r.height>100) {{
       scrollCandidates.push(el);
     }}
   }}
-  const scrollTarget=scrollCandidates[0] || null;
-  let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=false;
+  const scrollTarget=scrollCandidates.sort((a,b)=>
+    (b.clientHeight*Math.min(b.scrollHeight,8000))
+    -(a.clientHeight*Math.min(a.scrollHeight,8000))
+  )[0] || null;
+  let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=true;
   if (scrollTarget) {{
     scrollTop=scrollTarget.scrollTop;
     scrollHeight=scrollTarget.scrollHeight;
     clientHeight=scrollTarget.clientHeight;
-    atBottom=(scrollHeight > clientHeight + 40) && (scrollTop + clientHeight >= scrollHeight - 12);
+    atBottom=scrollTop+clientHeight>=scrollHeight-8;
     if (atBottom) scanState.atBottomSeen = true;
-  }}
-
-  // Only stop at Korece Rulet when all visible cards are clicked AND we have
-  // reached the bottom of the lobby (or scanned >=24 tables), so if Korece Rulet
-  // changed position and moved up, remaining tables below it are still scanned!
-  const koreceDone = cardHits.some(c =>
-    /\bKORECE\s*RULET\b|\bKOREAN\s*ROULETTE\b|\bKORE\s*RULET\b/.test(norm(c.label)) &&
-    isCardClicked(c)
-  ) || PY_CLICKED_KEYS.has('KORECE RULET') || PY_CLICKED_KEYS.has('Korece Rulet');
-  if (koreceDone && unclickedCards.length === 0 && (atBottom || PY_CLICKED_KEYS.size >= 44)) {{
-    return {{
-      ok: true,
-      mode: 'korece_rulet_stop',
-      stage: 'korece-rulet-completed',
-      clickedLabel: 'Korece Rulet',
-      cards,
-      closedTables,
-      remainingInView: 0,
-      atBottom,
-      title,
-      url: href
-    }};
-  }}
-
-  const next = unclickedCards[0] || null;
-  if (PY_CLICK_CARDS && next && clickReady && (nowMs - Number(scanState.clickedKeys[next.key] || 0)) >= 1600) {{
-    // Scroll the card cleanly into view synchronously and click it immediately
-    // in the same evaluation (never return early without clicking!).
-    const inViewport = next.rect.top >= 16 && next.rect.bottom <= (window.innerHeight - 10);
-    if (!inViewport) {{
-      try {{
-        next.hit.scrollIntoView({{block: 'center', inline: 'nearest', behavior: 'instant'}});
-      }} catch (_) {{}}
-      if (scrollTarget && next.rect.bottom > (window.innerHeight - 10)) {{
-        try {{
-          scrollTarget.scrollBy({{
-            top: Math.max(160, Math.round(next.rect.top - window.innerHeight * 0.28)),
-            behavior: 'instant'
-          }});
-        }} catch (_) {{}}
+    // V2.9.16: after the scanner reaches bottom once, do not force-scroll
+    // down again. This lets the user manually scroll upward without the
+    // program pulling the lobby back to the bottom.
+    if ((!atBottom && !scanState.atBottomSeen) || unclickedCards.length === 0) {{
+      if (!atBottom) {{
+        scrollTarget.scrollBy({{top:Math.max(360,Math.floor(clientHeight*0.72)),behavior:'instant'}});
       }}
-    }}
-    scanState.clickedKeys[next.key] = nowMs;
-    scanState.lastCardClickAt = nowMs;
-    try {{
-      try {{ performance.clearResourceTimings(); }} catch (_) {{}}
-      clickCardThumbnail(next.hit);
-      return {{
-        ok:true,
-        mode:'card_clicked',
-        stage:'card-clicked',
-        clickedKey:next.key,
-        clickedLabel:next.label,
-        clickedExpectedOrder:next.order,
-        remainingInView:Math.max(0, unclickedCards.length - 1),
-        cards,
-        closedTables,
-        atBottom,
-        title,url:href
-      }};
-    }} catch (e) {{
-      return {{
-        ok:false,
-        mode:'provider_lobby',
-        stage:'card-click-failed',
-        clickedKey:next.key,
-        clickedLabel:next.label,
-        reason:String(e),
-        cards,
-        closedTables,
-        title,url:href
-      }};
-    }}
-  }}
-
-  if (cards.length > 0 && unclickedCards.length === 0 && clickReady) {{
-    const step = Math.max(260, Math.floor((clientHeight || window.innerHeight || 600) * 0.55));
-    if (scrollTarget) {{
-      const prevTop = scrollTarget.scrollTop;
-      try {{ scrollTarget.scrollBy({{top: step, behavior: 'instant'}}); }} catch (_) {{}}
-      if (scrollTarget.scrollTop === prevTop && cardHits.length) {{
-        const anchorCard = cardHits[cardHits.length - 1].hit;
-        try {{ anchorCard.scrollIntoView({{block: 'start', behavior: 'instant'}}); }} catch (_) {{}}
-        try {{ anchorCard.dispatchEvent(new WheelEvent('wheel', {{deltaY: step, bubbles: true, cancelable: true}})); }} catch (_) {{}}
-      }}
-      scrollTop = scrollTarget.scrollTop;
-      scrollHeight = scrollTarget.scrollHeight;
-      clientHeight = scrollTarget.clientHeight;
-      atBottom = (scrollHeight > clientHeight + 40) && (scrollTop + clientHeight >= scrollHeight - 12);
     }}
   }}
 
@@ -9622,7 +9291,6 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     stage:category?(categoryState==='selected'?'roulette-selected':'roulette-unconfirmed'):'scanning',
     cards,
     closedTables,
-    remainingInView:unclickedCards.length,
     scrollTop,scrollHeight,clientHeight,atBottom,
     atBottomSeen: !!scanState.atBottomSeen,
     bodyLength:bodyText.length,
@@ -10936,6 +10604,25 @@ class ChromeBridge(threading.Thread):
         return handled
 
     def _collector_launch_url(self):
+        for ti in list((getattr(self, "target_info", {}) or {}).values()):
+            if str((ti or {}).get("type") or "").lower() != "page":
+                continue
+            raw_url = str((ti or {}).get("url") or "").strip()
+            if "meritbet" in raw_url.lower():
+                try:
+                    u = urllib.parse.urlsplit(raw_url)
+                    if u.scheme in ("http", "https") and u.netloc:
+                        return f"{u.scheme}://{u.netloc}/tr/live-casino/home?searchTerm=pragmatic+play+lobby"
+                except Exception:
+                    pass
+        try:
+            saved = str(self._saved_lobby_url() or "").strip()
+            if "meritbet" in saved.lower():
+                u = urllib.parse.urlsplit(saved)
+                if u.scheme in ("http", "https") and u.netloc:
+                    return f"{u.scheme}://{u.netloc}/tr/live-casino/home?searchTerm=pragmatic+play+lobby"
+        except Exception:
+            pass
         return PRAGMATIC_LOBBY_SCAN_URL
 
     def _target_id_for_session(self, sid):
@@ -10968,74 +10655,25 @@ class ChromeBridge(threading.Thread):
         if is_probe_target(tid):
             return True
 
-        known_tids = getattr(self, "collector_known_target_ids", None)
-        if known_tids is None:
-            known_tids = set()
-            self.collector_known_target_ids = known_tids
-        if tid in known_tids:
-            return True
-
-        # In single-tab lobby walk mode (table_scan_enabled), Chrome often reports
-        # the cross-origin Pragmatic Play Lobby OOPIF iframe (client.pragmaticplaylive.net)
-        # via Target.getTargets / Target.attachedToTarget without a parent sessionId
-        # or before collectorcreate resolves table_scan_target_id. Always recognize
-        # Pragmatic iframe targets as collector targets while scanning is active!
-        if getattr(self, "table_scan_enabled", False):
-            info_self = (getattr(self, "target_info", {}) or {}).get(tid, {}) or {}
-            typ_self = str(info_self.get("type") or "").lower()
-            url_self = str(info_self.get("url") or "").lower()
-            if typ_self == "iframe" and any(
-                x in url_self
-                for x in (
-                    "client.",
-                    "games.",
-                    "pragmaticplaylive",
-                    "/desktop/lobby",
-                    "/desktop/roulette",
-                    "/gs2c/",
-                    "/apps/lobby/",
-                )
-            ):
-                active_tid = (getattr(self, "session_targets", {}) or {}).get(
-                    str(getattr(self, "active_game_sid", "") or ""), ""
-                )
-                if getattr(self, "table_scan_tab_walk", False) or not active_tid or tid != active_tid:
-                    known_tids.add(tid)
-                    if root and tid not in getattr(self, "target_parent", {}):
-                        self.target_parent[tid] = root
-                    return True
-
+        if not root:
+            return False
         seen = set()
-        cur = tid
         for _ in range(8):
-            if (root and cur == root) or cur in known_tids or is_probe_target(cur):
-                known_tids.add(tid)
+            if tid == root or is_probe_target(tid):
                 return True
-            if not cur or cur in seen:
+            if not tid or tid in seen:
                 return False
-            seen.add(cur)
-            info = self.target_info.get(cur, {}) or {}
-            cur = str(
-                self.target_parent.get(cur)
+            seen.add(tid)
+            info = self.target_info.get(tid, {}) or {}
+            tid = str(
+                self.target_parent.get(tid)
                 or info.get("openerId")
                 or ""
             )
         return False
 
     def _is_collector_session(self, sid):
-        s = str(sid or "")
-        if not s:
-            return False
-        known_sids = getattr(self, "collector_known_session_ids", None)
-        if known_sids is None:
-            known_sids = set()
-            self.collector_known_session_ids = known_sids
-        if s in known_sids:
-            return True
-        if self._is_collector_target_id(self._target_id_for_session(s)):
-            known_sids.add(s)
-            return True
-        return False
+        return self._is_collector_target_id(self._target_id_for_session(sid))
 
     def _is_korece_table(self, table_id="", label="", theme_code=""):
         tid_low = str(table_id or "").lower()
@@ -11191,24 +10829,13 @@ class ChromeBridge(threading.Thread):
     def _close_table_scan_target(self):
         tids = []
         root = str(self.table_scan_target_id or "")
-        reused_tab = bool(getattr(self, "table_scan_reused_existing_tab", False))
-        page_count = sum(
-            1 for ti in (getattr(self, "target_info", {}) or {}).values()
-            if str((ti or {}).get("type") or "").lower() == "page"
-            and str((ti or {}).get("url") or "").startswith(("http://", "https://"))
-        )
-        if root and not reused_tab and page_count > 1:
+        if root:
             tids.append(root)
-            getattr(self, "collector_known_target_ids", set()).add(root)
-        elif reused_tab:
-            getattr(self, "collector_known_target_ids", set()).clear()
-            getattr(self, "collector_known_session_ids", set()).clear()
         tids.extend(list(self.table_scan_probe_targets.keys()))
         for scan_sid in list(self.session_table_activity.keys()):
             if self._is_collector_session(scan_sid):
                 self.session_table_activity.pop(scan_sid, None)
         self.table_scan_target_id = ""
-        self.table_scan_reused_existing_tab = False
         self.table_scan_probe_targets = {}
         self.table_scan_probe_urls = set()
         self.table_scan_probe_queue = []
@@ -11220,8 +10847,6 @@ class ChromeBridge(threading.Thread):
         self.table_scan_click_started_at = {}
         self.table_scan_returning_until = 0.0
         self.table_scan_lobby_seen_at = 0.0
-        self.table_scan_lobby_settle_until = 0.0
-        self.table_scan_last_card_click_ts = 0.0
         self.table_scan_stop_after_current = False
         if self.ws is not None:
             for tid in tids:
@@ -11248,7 +10873,6 @@ class ChromeBridge(threading.Thread):
         self.table_scan_probe_urls = set()
         self.table_scan_probed_keys = set()
         self.table_scan_clicked_keys = set()
-        self.table_scan_click_attempts = {}
         self.table_scan_click_deadlines = {}
         self.table_scan_click_started_at = {}
         self.table_scan_probe_done = set()
@@ -11260,62 +10884,13 @@ class ChromeBridge(threading.Thread):
         self.table_scan_last_clicked_label = ""
         self.table_scan_returning_until = 0.0
         self.table_scan_lobby_seen_at = 0.0
-        self.table_scan_lobby_settle_until = 0.0
-        self.table_scan_last_card_click_ts = 0.0
         self.table_scan_stop_after_current = False
         self.table_scan_last_remaining_in_view = 0
         self.table_scan_last_at_bottom = False
-        self.table_scan_key_by_table_id = {}
-        self.table_scan_last_collected_tid = ""
-        self.table_scan_last_collected_key = ""
         self.table_scan_live_order = []
         self.table_scan_position_alerts = []
         self.table_scan_closed_alerts = []
         self.table_scan_alert_seen = set()
-        self.table_scan_reused_existing_tab = False
-
-        # If a Pragmatic Play Lobby tab (3300922-real or /desktop/lobby) is
-        # ALREADY open in Chrome in tab-walk mode, reuse it immediately instead
-        # of opening a duplicate lobby tab!
-        existing_lobby_tid = ""
-        if getattr(self, "table_scan_tab_walk", False):
-            for cand_tid, cand_ti in list((getattr(self, "target_info", {}) or {}).items()):
-                c_typ = str((cand_ti or {}).get("type") or "").lower()
-                c_url = str((cand_ti or {}).get("url") or "").lower()
-                if c_typ == "page" and ("3300922-real" in c_url or "pragmatic%20play%20lobby" in c_url or "/desktop/lobby" in c_url):
-                    existing_lobby_tid = str(cand_tid)
-                    break
-
-        known_tids = getattr(self, "collector_known_target_ids", None)
-        if known_tids is None:
-            known_tids = set()
-            self.collector_known_target_ids = known_tids
-        known_sids = getattr(self, "collector_known_session_ids", None)
-        if known_sids is None:
-            known_sids = set()
-            self.collector_known_session_ids = known_sids
-
-        if existing_lobby_tid:
-            self.table_scan_target_id = existing_lobby_tid
-            self.table_scan_reused_existing_tab = True
-            known_tids.add(existing_lobby_tid)
-            if existing_lobby_tid in self.target_sessions:
-                known_sids.add(self.target_sessions[existing_lobby_tid])
-            for other_tid, other_ti in list((getattr(self, "target_info", {}) or {}).items()):
-                other_typ = str((other_ti or {}).get("type") or "").lower()
-                other_url = str((other_ti or {}).get("url") or "").lower()
-                if other_typ == "iframe" and any(
-                    x in other_url
-                    for x in ("client.", "games.", "pragmaticplaylive", "/desktop/lobby", "/desktop/roulette", "/gs2c/")
-                ):
-                    self.target_parent[other_tid] = existing_lobby_tid
-                    known_tids.add(other_tid)
-                    if other_tid in self.target_sessions:
-                        known_sids.add(self.target_sessions[other_tid])
-            with self.state.lock:
-                self.state.table_scan_status = status_text
-            return True
-
         self.send(
             "Target.createTarget",
             {
@@ -11479,9 +11054,9 @@ class ChromeBridge(threading.Thread):
         digest = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:12]
         return f"collector_{digest}", (label or f"Roulette {digest}")
 
-    def _schedule_collector_return(self, sid, delay=0.25):
+    def _schedule_collector_return(self, sid, delay=0.8):
         now = time.time()
-        delay = float(delay or 0.25)
+        delay = float(delay or 0.8)
         sid = str(sid or "")
         if self.table_scan_tab_walk:
             started = 0.0
@@ -11496,7 +11071,7 @@ class ChromeBridge(threading.Thread):
             if started:
                 delay = max(
                     delay,
-                    max(0.22, TAB_WALK_TABLE_MIN_DWELL_SECONDS - (now - started)),
+                    max(0.8, TAB_WALK_TABLE_MIN_DWELL_SECONDS - (now - started)),
                 )
         due = now + delay
         if sid:
@@ -11542,11 +11117,6 @@ class ChromeBridge(threading.Thread):
                         self.table_scan_click_deadlines.pop(scan_sid, None)
                         self.table_scan_click_started_at.pop(scan_sid, None)
                         self.session_table_activity.pop(scan_sid, None)
-                for scan_sid in list(self.session_info.keys()):
-                    if self._is_collector_session(scan_sid):
-                        self.session_table_activity.pop(scan_sid, None)
-                self.table_scan_current_click_key = ""
-                self.table_scan_current_click_label = ""
                 root_sid = self._collector_root_session() or sid
                 return_sids = []
                 for candidate in (sid, root_sid):
@@ -11558,28 +11128,17 @@ class ChromeBridge(threading.Thread):
                     if scan_sid not in return_sids and self._is_collector_session(scan_sid):
                         return_sids.append(scan_sid)
                 for return_sid in return_sids[:10]:
-                    ctx_ids = [None]
-                    for ctx in (self.execution_contexts.get(return_sid) or {}).values():
-                        cid = ctx.get("id")
-                        aux = ctx.get("auxData") or {}
-                        origin = str(ctx.get("origin") or "").lower()
-                        if cid is not None and bool(aux.get("isDefault", False)) and origin.startswith(("http://", "https://")):
-                            ctx_ids.append(int(cid))
-                    for cid in list(dict.fromkeys(ctx_ids))[:4]:
-                        params = {
+                    self.send(
+                        "Runtime.evaluate",
+                        {
                             "expression": COLLECTOR_LOBBY_CLICK_SCRIPT,
                             "returnByValue": True,
                             "awaitPromise": True,
-                        }
-                        if cid is not None:
-                            params["contextId"] = int(cid)
-                        self.send(
-                            "Runtime.evaluate",
-                            params,
-                            session_id=return_sid,
-                            kind="collectorback",
-                            context={"session": return_sid, "from": sid, "reason": reason, "context_id": cid},
-                        )
+                        },
+                        session_id=return_sid,
+                        kind="collectorback",
+                        context={"session": return_sid, "from": sid, "reason": reason},
+                    )
                 with self.state.lock:
                     self.state.table_scan_status = (
                         f"SEKMELİ TOPLA: {reason} • oyun içi Lobi düğmesine basılıyor"
@@ -12140,18 +11699,15 @@ class ChromeBridge(threading.Thread):
             return
 
         if mode in ("game_no_son500", "game_blocked"):
-            if self.table_scan_tab_walk and not self.table_scan_click_deadlines:
-                return
             self._mark_current_scan_card_done(label=str(value.get("title") or ""))
             key = str(self.table_scan_current_click_key or self.table_scan_last_clicked_label or sid)
             if key:
                 self.table_scan_probe_done.add(key)
                 self.table_scan_probe_skip.add(key)
-            label = self._clean_collector_label(
+            label = (
                 self.table_scan_current_click_label
                 or self.table_scan_last_clicked_label
-                or str(value.get("title") or "Roulette"),
-                fallback="Roulette",
+                or str(value.get("title") or "Roulette")
             )
             reason = "bloklu masa" if mode == "game_blocked" else "SON500 paneli yok"
             with self.state.lock:
@@ -12172,11 +11728,10 @@ class ChromeBridge(threading.Thread):
             if not self.table_scan_click_deadlines:
                 self.table_scan_click_deadlines[sid] = now + TAB_WALK_TABLE_TIMEOUT_SECONDS
                 self.table_scan_click_started_at.setdefault(sid, now)
-            label = self._clean_collector_label(
+            label = (
                 self.table_scan_current_click_label
                 or self.table_scan_last_clicked_label
-                or str(value.get("title") or "Roulette"),
-                fallback="Roulette",
+                or str(value.get("title") or "Roulette")
             )
             try:
                 collector_tid = str(
@@ -12233,8 +11788,6 @@ class ChromeBridge(threading.Thread):
             return
 
         if mode == "navigating":
-            if stage == "roulette-selecting" and self.table_scan_visited:
-                return
             if stage == "pragmatic-lobby-card-play":
                 message = "site aramasındaki Pragmatic Play Lobby kartında Oyna tıklandı"
             elif stage == "pragmatic-lobby-search-typed":
@@ -12243,8 +11796,6 @@ class ChromeBridge(threading.Thread):
                 message = "sol kategori menüsü açıldı • Rulet seçiliyor"
             elif stage == "roulette-selecting":
                 message = "Rulet kategorisi seçiliyor"
-            elif stage == "roulette-selected":
-                message = "Rulet kategorisi seçildi • masa listesi yükleniyor"
             else:
                 message = "Pragmatic lobi içinde geziniliyor"
             with self.state.lock:
@@ -12254,13 +11805,8 @@ class ChromeBridge(threading.Thread):
         if mode == "card_clicked":
             self.table_scan_returning_until = 0.0
             self.table_scan_lobby_seen_at = 0.0
-            self.table_scan_last_card_click_ts = now
             clicked_key = str(value.get("clickedKey") or "").strip()
             clicked_label = str(value.get("clickedLabel") or "").strip()
-            rem_in_view = int(value.get("remainingInView", 0) or 0)
-            at_bot_click = bool(value.get("atBottom", False))
-            self.table_scan_last_remaining_in_view = rem_in_view
-            self.table_scan_last_at_bottom = at_bot_click
             click_note = self._record_lobby_order_and_alerts(
                 cards=value.get("cards"),
                 closed_tables=value.get("closedTables"),
@@ -12271,16 +11817,9 @@ class ChromeBridge(threading.Thread):
                 self.table_scan_current_click_label = clicked_label
                 self.table_scan_last_clicked_label = clicked_label
             if clicked_key:
+                self.table_scan_clicked_keys.add(clicked_key)
                 self.table_scan_current_click_key = clicked_key
-                attempts_map = getattr(self, "table_scan_click_attempts", None)
-                if attempts_map is None:
-                    attempts_map = {}
-                    self.table_scan_click_attempts = attempts_map
-                attempts = int(attempts_map.get(clicked_key, 0) or 0) + 1
-                attempts_map[clicked_key] = attempts
-                if attempts >= 3:
-                    self.table_scan_clicked_keys.add(clicked_key)
-            if self._is_korece_table(label=clicked_label) and rem_in_view <= 0 and (at_bot_click or len(self.table_scan_clicked_keys) >= 44):
+            if self._is_korece_table(label=clicked_label):
                 self.table_scan_stop_after_current = True
             for row in [r for r in (value.get("cards") or []) if isinstance(r, dict)]:
                 key = str(row.get("key") or "").strip()
@@ -12306,11 +11845,10 @@ class ChromeBridge(threading.Thread):
             for scan_sid in list(self.session_info.keys()):
                 if self._is_collector_session(scan_sid):
                     self.session_table_activity.pop(scan_sid, None)
-            clean_clicked_label = self._clean_collector_label(clicked_label, fallback="veri bekleniyor")
             with self.state.lock:
                 self.state.table_scan_status = (
                     f"{prefix}: masa kartı tıklandı • "
-                    + (clean_clicked_label[:60] if clean_clicked_label else "veri bekleniyor")
+                    + (clicked_label[:60] if clicked_label else "veri bekleniyor")
                     + click_note
                     + " • sağ-alt SON500 paneli bekleniyor"
                 )
@@ -12320,8 +11858,6 @@ class ChromeBridge(threading.Thread):
             return
 
         cards = [row for row in (value.get("cards") or []) if isinstance(row, dict)]
-        self.table_scan_last_remaining_in_view = int(value.get("remainingInView", 0) or 0)
-        self.table_scan_last_at_bottom = bool(value.get("atBottom", False))
         self._record_lobby_order_and_alerts(
             cards=cards,
             closed_tables=value.get("closedTables"),
@@ -12330,10 +11866,8 @@ class ChromeBridge(threading.Thread):
             return
         if self.table_scan_tab_walk and cards:
             self.table_scan_lobby_seen_at = now
-            last_click_age = now - float(getattr(self, "table_scan_last_card_click_ts", 0.0) or 0.0)
             if returning_to_lobby:
                 self.table_scan_returning_until = 0.0
-                self.table_scan_lobby_settle_until = now + 0.32
                 for scan_sid in list(self.session_info.keys()):
                     if self._is_collector_session(scan_sid):
                         self.table_scan_click_deadlines.pop(scan_sid, None)
@@ -12341,12 +11875,6 @@ class ChromeBridge(threading.Thread):
                         self.session_table_activity.pop(scan_sid, None)
                 self.table_scan_current_click_key = ""
                 self.table_scan_current_click_label = ""
-            elif self.table_scan_click_deadlines and last_click_age >= 2.4:
-                for scan_sid in list(self.session_info.keys()):
-                    if self._is_collector_session(scan_sid):
-                        self.table_scan_click_deadlines.pop(scan_sid, None)
-                        self.table_scan_click_started_at.pop(scan_sid, None)
-                        self.session_table_activity.pop(scan_sid, None)
         before = len(self.table_scan_visited)
         queued_probes = 0
         for row in cards:
@@ -12453,13 +11981,6 @@ class ChromeBridge(threading.Thread):
             return
 
         self.target_info[tid] = dict(ti)
-        if (
-            typ == "iframe"
-            and self.table_scan_enabled
-            and self.table_scan_target_id
-            and tid not in self.target_parent
-        ):
-            self.target_parent[tid] = str(self.table_scan_target_id)
         self.save_roulette_url(ti)
 
         if tid in self.target_sessions or tid in self.attaching:
@@ -13145,6 +12666,7 @@ class ChromeBridge(threading.Thread):
 
                     if (
                         self.table_scan_enabled
+                        and self.table_scan_target_id
                         and self._is_collector_session(sid)
                         and (
                             self.is_table_scan_target(sid)
@@ -13156,23 +12678,9 @@ class ChromeBridge(threading.Thread):
                         # that iframe as a separate Target, but Runtime exposes
                         # its default execution context. Probe those contexts
                         # and keep clicks in the exact context that found cards.
-                        sid_url_low = str((self.session_info.get(sid, {}) or {}).get("url", "") or "").lower()
-                        sid_host_low = urllib.parse.urlsplit(sid_url_low).netloc.lower()
-                        is_pragmatic_session = sid_host_low.startswith(("client.", "games.")) or "pragmaticplaylive" in sid_host_low
-                        has_dedicated_pragmatic_collector_session = any(
-                            other_sid != sid
-                            and self._is_collector_session(other_sid)
-                            and (
-                                urllib.parse.urlsplit(
-                                    str((self.session_info.get(other_sid, {}) or {}).get("url", "") or "").lower()
-                                ).netloc.lower().startswith(("client.", "games."))
-                                or "pragmaticplaylive"
-                                in str((self.session_info.get(other_sid, {}) or {}).get("url", "") or "").lower()
-                            )
-                            for other_sid in list(self.session_info.keys())
-                        )
-                        pragmatic_ctx_ids = []
-                        other_ctx_ids = []
+                        scan_contexts = []
+                        if self.is_table_scan_target(sid):
+                            scan_contexts.append(None)
                         for ctx in (self.execution_contexts.get(sid) or {}).values():
                             cid = ctx.get("id")
                             aux = ctx.get("auxData") or {}
@@ -13181,33 +12689,7 @@ class ChromeBridge(threading.Thread):
                                 continue
                             if not origin.startswith(("http://", "https://")):
                                 continue
-                            if any(b in origin for b in ("livechat", "gamedata365", "google", "facebook", "youtube")):
-                                continue
-                            ctx_host = urllib.parse.urlsplit(origin).netloc.lower()
-                            if ctx_host.startswith(("client.", "games.")) or "pragmatic" in ctx_host:
-                                pragmatic_ctx_ids.append(int(cid))
-                            elif not sid_host_low or ctx_host != sid_host_low:
-                                other_ctx_ids.append(int(cid))
-
-                        scan_contexts = []
-                        if is_pragmatic_session:
-                            scan_contexts.append(None)
-                            scan_contexts.extend(pragmatic_ctx_ids)
-                        elif pragmatic_ctx_ids:
-                            # Outer operator page (e.g. meritbet) already has a
-                            # Pragmatic iframe execution context; scan ONLY the
-                            # Pragmatic context so the outer wrapper never steals
-                            # clicks or stalls on 'Rulet kategorisi seçiliyor'.
-                            scan_contexts.extend(pragmatic_ctx_ids)
-                        elif has_dedicated_pragmatic_collector_session:
-                            # A dedicated Pragmatic iframe target is already attached
-                            # as its own session; do not scan the outer wrapper page.
-                            scan_contexts = []
-                        else:
-                            if self.is_table_scan_target(sid):
-                                scan_contexts.append(None)
-                            scan_contexts.extend(other_ctx_ids)
-
+                            scan_contexts.append(int(cid))
                         # Preserve order while removing duplicate context ids.
                         scan_contexts = list(dict.fromkeys(scan_contexts))
                         for context_id in scan_contexts:
@@ -13218,7 +12700,10 @@ class ChromeBridge(threading.Thread):
                             wait_started = max(
                                 [float(x or 0.0) for x in self.table_scan_click_started_at.values()] or [0.0]
                             )
-                            skip_runtime_direct = bool(self.table_scan_tab_walk)
+                            skip_runtime_direct = bool(
+                                self.table_scan_tab_walk
+                                and (returning_to_lobby or not wait_started or (now - wait_started) < 0.8)
+                            )
                             direct_key = (sid, context_id, "collector_direct")
                             if (not skip_runtime_direct) and now - float(last_direct_scan.get(direct_key, 0.0)) >= 2.0:
                                 last_direct_scan[direct_key] = now
@@ -13259,13 +12744,17 @@ class ChromeBridge(threading.Thread):
                                     or self.table_scan_current_click_label
                                 ),
                             )
-                            history_active = bool(
-                                self.table_scan_click_deadlines
-                                or self.table_scan_current_click_key
+                            history_active = (
+                                bool(
+                                    self.table_scan_click_deadlines
+                                    or self.table_scan_current_click_key
+                                )
+                                if self.table_scan_tab_walk
+                                else bool(collector_tid or self.table_scan_current_click_key)
                             )
-                            if self.table_scan_tab_walk and history_active and not returning_to_lobby:
+                            if history_active and not returning_to_lobby:
                                 hist_key = (sid, context_id, "collector_history500")
-                                if now - float(last_500_scan.get(hist_key, 0.0)) >= 0.65:
+                                if now - float(last_500_scan.get(hist_key, 0.0)) >= (1.1 if self.table_scan_tab_walk else 3.0):
                                     last_500_scan[hist_key] = now
                                     hist_params = {
                                         "expression": HISTORY500_SCAN,
@@ -13296,19 +12785,13 @@ class ChromeBridge(threading.Thread):
                                 continue
 
                             scan_key = (sid, context_id)
-                            if now - float(last_table_nav_scan.get(scan_key, 0.0)) < (0.38 if self.table_scan_tab_walk else 1.5):
+                            if now - float(last_table_nav_scan.get(scan_key, 0.0)) < (0.8 if self.table_scan_tab_walk else 1.5):
                                 continue
-                            settle_until = float(getattr(self, "table_scan_lobby_settle_until", 0.0) or 0.0)
-                            can_click_cards = bool(
-                                not returning_to_lobby
-                                and not self.table_scan_click_deadlines
-                                and now >= settle_until
-                            )
                             last_table_nav_scan[scan_key] = now
                             params = {
                                 "expression": build_multi_table_nav_scan(
                                     self.table_scan_clicked_keys,
-                                    click_cards=can_click_cards,
+                                    click_cards=True,
                                 ),
                                 "returnByValue": True,
                                 "awaitPromise": True,
@@ -14267,28 +13750,6 @@ class ChromeBridge(threading.Thread):
                 tid = str(obj.get("result", {}).get("targetId", "") or "")
                 if tid and self.table_scan_enabled:
                     self.table_scan_target_id = tid
-                    known_tids = getattr(self, "collector_known_target_ids", None)
-                    if known_tids is None:
-                        known_tids = set()
-                        self.collector_known_target_ids = known_tids
-                    known_tids.add(tid)
-                    known_sids = getattr(self, "collector_known_session_ids", None)
-                    if known_sids is None:
-                        known_sids = set()
-                        self.collector_known_session_ids = known_sids
-                    if tid in self.target_sessions:
-                        known_sids.add(self.target_sessions[tid])
-                    for other_tid, other_ti in list(self.target_info.items()):
-                        other_typ = str((other_ti or {}).get("type") or "").lower()
-                        other_url = str((other_ti or {}).get("url") or "").lower()
-                        if other_typ == "iframe" and any(
-                            x in other_url
-                            for x in ("client.", "games.", "pragmaticplaylive", "/desktop/lobby", "/desktop/roulette", "/gs2c/")
-                        ):
-                            self.target_parent.setdefault(other_tid, tid)
-                            known_tids.add(other_tid)
-                            if other_tid in self.target_sessions:
-                                known_sids.add(self.target_sessions[other_tid])
                     ti = self.target_info.get(tid)
                     if ti:
                         self.attach_target(ti)
@@ -14597,7 +14058,6 @@ class ChromeBridge(threading.Thread):
                         blocked_or_no_son500 = bool(
                             is_collector
                             and self.table_scan_tab_walk
-                            and self.table_scan_click_deadlines
                             and not bool(value.get("lobbyLike"))
                             and int(value.get("lobbyCardCount", 0) or 0) < 2
                             and (
@@ -14637,16 +14097,7 @@ class ChromeBridge(threading.Thread):
                             self.table_scan_current_click_key = ""
                             self.table_scan_current_click_label = ""
                             return
-                        wait_started_at = max(
-                            [float(x or 0.0) for x in self.table_scan_click_started_at.values()] or [0.0]
-                        )
-                        if (
-                            is_collector
-                            and bool(value.get("lobbyLike"))
-                            and (returning_to_lobby or not wait_started_at or (now_value - wait_started_at) >= 2.4)
-                        ):
-                            if returning_to_lobby:
-                                self.table_scan_lobby_settle_until = time.time() + 0.32
+                        if is_collector and bool(value.get("lobbyLike")):
                             self.table_scan_returning_until = 0.0
                             self.table_scan_lobby_seen_at = time.time()
                             for scan_sid in list(self.session_info.keys()):
@@ -14693,7 +14144,7 @@ class ChromeBridge(threading.Thread):
                                 sid_ctx = str(meta.get("session") or "")
                                 now_done = time.time()
                                 if sid_ctx:
-                                    self._schedule_collector_return(sid_ctx, 0.25)
+                                    self._schedule_collector_return(sid_ctx, 0.8)
                                 key = str(self.table_scan_current_click_key or table_id)
                                 self.table_scan_probe_done.add(key)
                                 self.table_scan_probe_success.add(key)
@@ -14714,8 +14165,7 @@ class ChromeBridge(threading.Thread):
                                         pass
                             elapsed = max(0.0, now_wait - started) if started else 0.0
                             has_son500_tab = bool(value.get("foundTab") or str(value.get("source") or "") == "son500-tab")
-                            active_game_ui = bool(value.get("activeGameUi"))
-                            skip_no_panel = elapsed >= TAB_WALK_NO_SON500_SKIP_SECONDS and active_game_ui and not has_son500_tab
+                            skip_no_panel = elapsed >= TAB_WALK_NO_SON500_SKIP_SECONDS and not has_son500_tab
                             skip_empty_panel = elapsed >= TAB_WALK_EMPTY_SON500_SKIP_SECONDS and has_son500_tab and len(nums) < 40
                             if skip_no_panel or skip_empty_panel:
                                 self._mark_current_scan_card_done(
@@ -14845,13 +14295,6 @@ class ChromeBridge(threading.Thread):
                 parent_tid = self.session_targets.get(str(parent_sid or ""), "")
                 if parent_tid:
                     self.target_parent[tid] = parent_tid
-                elif (
-                    str(ti.get("type") or "") == "iframe"
-                    and self.table_scan_enabled
-                    and self.table_scan_target_id
-                    and tid not in self.target_parent
-                ):
-                    self.target_parent[tid] = str(self.table_scan_target_id)
                 self.target_info[tid] = dict(ti)
                 self.target_sessions[tid] = child_sid
                 self.session_targets[child_sid] = tid
@@ -17861,8 +17304,7 @@ def table_scan_self_test():
     bridge.target_parent = {"provider-iframe": "collector-root"}
     bridge.target_info = {}
     assert bridge._is_collector_target_id("provider-iframe")
-    bridge.table_scan_target_id = ""
-    assert bridge._is_collector_target_id("provider-iframe")
+    assert not bridge._is_collector_target_id("other-tab")
     assert bridge._is_korece_table(table_id="381rwkr381korean")
     assert bridge._is_korece_table(theme_code="pp_roulette_crl_chroma_korean_roulette")
     assert bridge._is_korece_table(label="Korece Rulet")
