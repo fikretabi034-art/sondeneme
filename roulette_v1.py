@@ -8820,9 +8820,10 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     return {{ok:true,mode:'waiting',stage:'provider-context',title,url:href}};
   }}
 
-  const visibleControls=Array.from(document.querySelectorAll(
-    'button,a,[role="button"],[tabindex],div,span'
-  )).filter(visible);
+  const visibleControls = deepQueryAll(
+    document,
+    'button,a,[role="button"],[tabindex],li,nav *,aside *,div,span,p,h1,h2,h3'
+  ).filter(visible);
 
   // V2.9.42: if a real game overlay is visible, stop before the
   // generic lobby/card scanner. Some operators keep the lobby DOM behind the
@@ -8847,9 +8848,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     ].join(' '));
     return /\b(LOBI|LOBBY)\b/.test(t) && r.top <= innerHeight * 0.28 && r.left >= innerWidth * 0.45;
   }});
-  const lobbyTileCount = Array.from(document.querySelectorAll(
-    '[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]'
-  )).filter(visible).length;
+  const lobbyTileCount = lobbyTileElements.length;
   const activeGameUi = /SONRAKI\s+OYUNU\s+BEKLEYIN|WAIT\s+FOR\s+NEXT\s+GAME|BAKIYE|BALANCE|TOPLAM\s+BAHIS|TOTAL\s+BET|SICAK\s*&\s*SOGUK|SICAK\s*&\s*SOĞUK|HOT\s*&\s*COLD|KAZANCI|WINNINGS|JEU\s*0|VOISINS|ORPHELINS|TIERS|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY/.test(bodyText);
   const blockedActiveTable = blockedLabel(title + ' ' + bodyText);
   const gameOverlayLikely = lobbyTileCount < 2 && (hasInGameLobbyButton || (hasSon500Control && /BAKIYE|BALANCE|OTOMATIK|AUTOMATIC|BAHIS|BET|SICAK|HOT|VOISINS|TIERS|ORPHELINS|JEU/.test(bodyText)));
@@ -8905,21 +8904,13 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }}
   }}
 
-  const categoryLabels=new Set(['RULET','ROULETTE','RULET MASALARI','ROULETTE TABLES']);
-  const category=visibleControls.map(el => {{
-    const label=norm(el.innerText || el.textContent);
-    const hit=clickable(el);
-    if (!hit || !visible(hit) || !categoryLabels.has(label)) return null;
-    if (el.closest('[data-testid*="tile" i],[class*="tile" i],[class*="card" i]')) return null;
-    return hit;
-  }}).find(Boolean);
-
   const scanState=window.__rouletteLobbyScanState
     || (window.__rouletteLobbyScanState={{
       menuAttemptAt:0,
       categoryAttemptAt:0,
       categoryAttempts:0,
-      categoryFirstSeenAt:0
+      categoryFirstSeenAt:0,
+      rouletteRoomEntered:false
     }});
   const selected=el => {{
     if (!el) return false;
@@ -8931,58 +8922,126 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       || /(^|[\s_-])(active|selected|current|checked)([\s_-]|$)/i.test(cls);
   }};
 
-  let categoryState = 'missing';
-  if (lobbyTileCount >= 4 && /\b(RULET|ROULETTE)\b/.test(bodyText)) {{
-    categoryState = 'selected';
-  }} else if (category) {{
-    if (selected(category)) {{
-      categoryState = 'selected';
-    }} else {{
+  const categoryLabels=new Set(['RULET','ROULETTE','RULET MASALARI','ROULETTE TABLES']);
+  const sidebarCandidates = visibleControls.map(el => {{
+    const label = norm(el.innerText || el.textContent || '');
+    const aria = norm([
+      el.getAttribute && el.getAttribute('aria-label'),
+      el.getAttribute && el.getAttribute('title'),
+      el.getAttribute && el.getAttribute('data-testid')
+    ].join(' '));
+    if (!categoryLabels.has(label) && !/\b(RULET|ROULETTE)\b/.test(aria)) return null;
+    if (el.closest && el.closest('[data-testid*="tile" i],[class*="tile" i],[class*="card" i]')) return null;
+    const r = el.getBoundingClientRect();
+    if (r.left > Math.max(280, window.innerWidth * 0.30) || r.top < 70 || r.width > 300 || r.height > 95) return null;
+    const hit = clickable(el) || (el.closest && el.closest('li,a,button,[role="button"],[tabindex]')) || el.parentElement || el;
+    const exactScore = categoryLabels.has(label) ? 200 : 80;
+    return {{el, hit, score: exactScore - r.left - Math.abs(r.height - 36)}};
+  }}).filter(Boolean).sort((a, b) => b.score - a.score);
+  const category = sidebarCandidates[0] ? sidebarCandidates[0].hit : null;
+  const categoryEl = sidebarCandidates[0] ? sidebarCandidates[0].el : null;
+
+  // Detect whether we are inside the dedicated "Rulet" room vs still on the
+  // "Size Özel" (For You) landing page of Pragmatic Play Lobby.
+  const hasRouletteFilterPills = /\b(STANDART|STANDARD)\b/.test(bodyText)
+    && /\b(ANA\s*DILINIZDE|VERSIYONLAR|VERSIONS|OTOMATIK|AUTO)\b/.test(bodyText);
+  const hasTopRouletteHeader = visibleControls.some(el => {{
+    const r = el.getBoundingClientRect();
+    const t = norm(el.innerText || el.textContent || '');
+    return (t === 'RULET' || t === 'ROULETTE') && r.top <= 105 && r.left >= 32 && r.left <= 260 && r.height <= 64;
+  }});
+  const hasExpandedHomeSidebar = /\bSIZE\s*OZEL\b|\bFOR\s*YOU\b/.test(bodyText)
+    || (/\bBLACKJACK\b/.test(bodyText) && /\bBACCARAT\b/.test(bodyText) && /\bPOKER\b/.test(bodyText));
+  const hasHomeBannerOrRecent = /\bSON\s+OYNANAN\s+OYUNLAR\b|\bRECENTLY\s+PLAYED\b|\bONE\s+BLACKJACK\b/.test(bodyText);
+
+  if ((hasRouletteFilterPills || hasTopRouletteHeader) && !hasHomeBannerOrRecent) {{
+    scanState.rouletteRoomEntered = true;
+  }} else if (hasExpandedHomeSidebar || hasHomeBannerOrRecent) {{
+    scanState.rouletteRoomEntered = false;
+  }}
+
+  const inRouletteRoom = !hasHomeBannerOrRecent && (
+    hasRouletteFilterPills
+    || (!hasExpandedHomeSidebar && (
+      hasTopRouletteHeader
+      || !!scanState.rouletteRoomEntered
+      || (lobbyTileCount >= 6 && !/\b(BLACKJACK|BACCARAT|POKER|SLOT|OYUN\s*SOVU|ASYA\s*OYUNLARI)\b/.test(bodyText))
+    ))
+  );
+
+  let categoryState = inRouletteRoom ? 'selected' : 'missing';
+  if (!inRouletteRoom) {{
+    if (category || categoryEl) {{
       categoryState = 'unconfirmed';
       if (!scanState.categoryFirstSeenAt) scanState.categoryFirstSeenAt = Date.now();
-      if (Date.now()-scanState.categoryAttemptAt>=3500 && (scanState.categoryAttempts||0) < 4) {{
+      if (Date.now() - scanState.categoryAttemptAt >= 850) {{
         try {{
-          category.click();
-          scanState.categoryAttemptAt=Date.now();
-          scanState.categoryAttempts=(scanState.categoryAttempts||0)+1;
+          const targetEl = categoryEl || category;
+          const r = targetEl.getBoundingClientRect();
+          const cx = Math.round(r.left + r.width * 0.5);
+          const cy = Math.round(r.top + r.height * 0.5);
+          const clickNodes = [];
+          const ptEl = document.elementFromPoint ? document.elementFromPoint(cx, cy) : null;
+          if (ptEl) clickNodes.push(ptEl);
+          let p = categoryEl || category;
+          for (let k = 0; k < 4 && p && p !== document.body; k++, p = p.parentElement) {{
+            const pr = p.getBoundingClientRect();
+            if (pr.height <= 85 && pr.width <= 320 && !clickNodes.includes(p)) {{
+              clickNodes.push(p);
+            }}
+          }}
+          if (category && !clickNodes.includes(category)) clickNodes.push(category);
+          for (const node of clickNodes) {{
+            if (!node) continue;
+            for (const evType of ['pointerover','mouseover','mouseenter','mousemove','pointerdown','mousedown','pointerup','mouseup']) {{
+              try {{
+                node.dispatchEvent(new MouseEvent(evType, {{bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}}));
+              }} catch (_) {{}}
+            }}
+            try {{ node.click(); }} catch (_) {{}}
+          }}
+          scanState.categoryAttemptAt = Date.now();
+          scanState.categoryAttempts = (scanState.categoryAttempts || 0) + 1;
         }} catch (e) {{
           return {{ok:false,mode:'waiting',stage:'roulette-click-failed',reason:String(e)}};
         }}
-        return {{
-          ok:true,mode:'navigating',stage:'roulette-selecting',
-          attempts:scanState.categoryAttempts,title,url:href
-        }};
       }}
-      // Some Pragmatic lobby builds never mark the category as selected.
-      // After a few clicks, continue with visible roulette cards instead of
-      // getting stuck forever in "roulette-selecting".
-    }}
-  }} else if (Date.now()-scanState.menuAttemptAt>=5000) {{
-    const menuWords=/MENU|CATEGORY|CATEGORIES|SIDEBAR|DRAWER|EXPAND|COLLAPSE|NAVIGATION|ARROW|CHEVRON/;
-    const arrows=visibleControls.map(el => {{
-      const hit=clickable(el);
-      if (!hit || !visible(hit)) return null;
-      const r=hit.getBoundingClientRect();
-      if (r.left > Math.max(150,window.innerWidth*0.18) || r.width>100 || r.height>100) return null;
-      const meta=norm([
-        hit.getAttribute('aria-label'),hit.getAttribute('title'),
-        hit.getAttribute('data-testid'),hit.id,
-        typeof hit.className==='string'?hit.className:''
-      ].join(' '));
-      const icon=hit.querySelector('svg,[class*="arrow" i],[class*="chevron" i]');
-      const text=norm(hit.innerText || hit.textContent);
-      if (!menuWords.test(meta) && !(icon && !text)) return null;
-      return {{hit,score:(menuWords.test(meta)?100:0)+(icon?20:0)-r.left}};
-    }}).filter(Boolean).sort((a,b)=>b.score-a.score);
-    if (arrows.length) {{
-      try {{
-        arrows[0].hit.click();
-        scanState.menuAttemptAt=Date.now();
-      }} catch (e) {{
-        return {{ok:false,mode:'waiting',stage:'menu-click-failed',reason:String(e)}};
+      // Do NOT fall through to card clicking while still on "Size Özel"; wait for
+      // the "Rulet" room to open first!
+      return {{
+        ok:true,mode:'navigating',stage:'roulette-selecting',
+        attempts:scanState.categoryAttempts,title,url:href
+      }};
+    }} else if (Date.now()-scanState.menuAttemptAt>=2000) {{
+      const menuWords=/MENU|CATEGORY|CATEGORIES|SIDEBAR|DRAWER|EXPAND|COLLAPSE|NAVIGATION|ARROW|CHEVRON/;
+      const arrows=visibleControls.map(el => {{
+        const hit=clickable(el) || el;
+        if (!hit || !visible(hit)) return null;
+        const r=hit.getBoundingClientRect();
+        if (r.left > Math.max(150,window.innerWidth*0.18) || r.width>100 || r.height>100) return null;
+        const meta=norm([
+          hit.getAttribute && hit.getAttribute('aria-label'),
+          hit.getAttribute && hit.getAttribute('title'),
+          hit.getAttribute && hit.getAttribute('data-testid'),
+          hit.id,
+          typeof hit.className==='string'?hit.className:''
+        ].join(' '));
+        const icon=hit.querySelector && hit.querySelector('svg,[class*="arrow" i],[class*="chevron" i]');
+        const text=norm(hit.innerText || hit.textContent);
+        if (!menuWords.test(meta) && !(icon && !text)) return null;
+        return {{hit,score:(menuWords.test(meta)?100:0)+(icon?20:0)-r.left}};
+      }}).filter(Boolean).sort((a,b)=>b.score-a.score);
+      if (arrows.length) {{
+        try {{
+          arrows[0].hit.click();
+          scanState.menuAttemptAt=Date.now();
+        }} catch (e) {{
+          return {{ok:false,mode:'waiting',stage:'menu-click-failed',reason:String(e)}};
+        }}
+        return {{ok:true,mode:'navigating',stage:'menu-opened',title,url:href}};
       }}
-      return {{ok:true,mode:'navigating',stage:'menu-opened',title,url:href}};
     }}
+    return {{ok:true,mode:'navigating',stage:'roulette-selecting',title,url:href}};
   }}
 
   const cards=[];
