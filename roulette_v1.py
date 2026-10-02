@@ -8353,18 +8353,15 @@ HISTORY500_SCAN = r"""
   }
 
   let tab = findHistoryTab();
-  const autoButtons = (!tab && ALLOW_EXPAND) ? all.filter(el => {
+  const autoButtons = all.filter(el => {
     const raw = readableText(el);
     if (raw.length < 6 || raw.length > 40) return false;
     return /OTOMAT[İI]K\s*OYUN|AUTOMATIC\s*(PLAY|GAME)|AUTO\s*PLAY/.test(norm(raw)) && visibleStyle(el);
-  }) : [];
+  });
   const autoFound = autoButtons.length > 0;
   let expandedDrawer = false;
-  // CRITICAL: Only attempt to click the drawer expand toggle when ALLOW_EXPAND
-  // is true (background collector only) AND the in-game OTOMATİK OYUN button
-  // (autoFound) is visibly present on screen. Never click anything in a lobby!
-  if (!tab && ALLOW_EXPAND && autoFound) {
-    const autoRect = autoButtons[0].getBoundingClientRect();
+  if (!tab && ALLOW_EXPAND) {
+    const autoRect = autoButtons.length ? autoButtons[0].getBoundingClientRect() : null;
     const toggles = [];
     for (const el of deepQueryAll(document, 'button,[role="button"],a,div,span,svg')) {
       if (!visibleStyle(el)) continue;
@@ -8373,21 +8370,27 @@ HISTORY500_SCAN = r"""
       const text = norm(readableText(el));
       if (r.width < 10 || r.height < 10 || r.width > 95 || r.height > 80) continue;
       if (r.top < innerHeight * 0.42 || r.top > innerHeight * 0.97) continue;
-      if (/OTOMAT|AUTOMATIC|BET|BAHİS|SPIN|VOISIN|ORPHELIN|TIERS|ROULETTE|RULET/.test(text)) continue;
+      if (/OTOMAT|AUTOMATIC|BET|BAHİS|SPIN|VOISIN|ORPHELIN|TIERS/.test(text)) continue;
       if (numRe.test(text)) continue;
-      const dy = autoRect.top - r.bottom;
-      const dx = Math.abs((r.left + r.width / 2) - autoRect.right);
-      if (dy < -12 || dy > 95 || r.left < autoRect.left - 120 || r.right > autoRect.right + 120) continue;
       const hint = [
         el.id || '', el.getAttribute('class') || '',
         el.getAttribute('aria-label') || '', el.getAttribute('title') || '',
         el.getAttribute('data-testid') || '',
         (parentOf(el) && (parentOf(el).getAttribute('class') || '')) || ''
       ].join(' ').toLowerCase();
-      let score = 65 - Math.min(40, Math.abs(dy - 22) / 2) - Math.min(25, dx / 8);
+      let score = 0;
       if (/(history|statistic|result|drawer|expand|collapse|chevron|arrow|toggle|recent)/.test(hint)) score += 75;
       if (text === '' || text === '⌃' || text === '▲' || text === '˄' || text === '^') score += 25;
-      if (score >= 55) {
+      if (autoRect) {
+        const dy = autoRect.top - r.bottom;
+        const dx = Math.abs((r.left + r.width / 2) - autoRect.right);
+        if (dy >= -12 && dy <= 95 && r.left >= autoRect.left - 120 && r.right <= autoRect.right + 120) {
+          score += 65 - Math.min(40, Math.abs(dy - 22) / 2) - Math.min(25, dx / 8);
+        }
+      } else if (r.left >= innerWidth * 0.50) {
+        score += 20;
+      }
+      if (score >= 45) {
         toggles.push({el, score});
       }
     }
@@ -8403,6 +8406,11 @@ HISTORY500_SCAN = r"""
         tab = findHistoryTab();
       } catch (_) {}
     }
+  }
+
+  if (tab && ALLOW_EXPAND) {
+    try { tab.click(); } catch (_) {}
+    await sleep(350);
   }
 
   let roots = [];
@@ -8439,11 +8447,6 @@ HISTORY500_SCAN = r"""
   }
 
   collectFromTab();
-  if (tab && ALLOW_EXPAND && !roots.length) {
-    try { tab.click(); } catch (_) {}
-    await sleep(350);
-    collectFromTab();
-  }
 
   // CRITICAL: Only read SON 500 numbers when the SON 500 tab is genuinely visible!
   // Never read the 430x390 box above OTOMATİK OYUN or whole-page clusters when
@@ -8880,9 +8883,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   if (!providerContext) {{
-    if (String(href || '').toLowerCase().includes('opengames=3300922-real')) {{
-      return {{ok:true,mode:'waiting',stage:'outer-wrapper-frame',title,url:href}};
-    }}
+    // outer-wrapper-frame fallback: run operatorLobbyLauncher as in roulette_v1.yedek.py
     const launched=operatorLobbyLauncher();
     if (launched) return launched;
     return {{ok:true,mode:'waiting',stage:'provider-context',title,url:href}};
@@ -9155,7 +9156,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
       label = ('ROULETTE ' + gameId + ' ' + label).trim().slice(0,260);
     }}
 
-    const key=(tableId || gameId || cardHref || (canon ? canon.key : norm(label))+'|'+testid).slice(0,420);
+    const key=(tableId || gameId || cardHref || (canon ? canon.key : (norm(label)+'|'+testid))).slice(0,420);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     rawCardItems.push({{
@@ -12173,9 +12174,6 @@ class ChromeBridge(threading.Thread):
             return False
         return (
             sid == self.active_game_sid
-            or self._is_collector_session(sid)
-            or "client." in url
-            or "games." in url
             or "/desktop/" in url
             or "/gs2c/game/" in url
             or "/apps/lobby/" in url
@@ -12229,9 +12227,6 @@ class ChromeBridge(threading.Thread):
             return False
 
         is_col = self._is_collector_session(sid)
-        if is_col and self.table_scan_tab_walk and not self.table_scan_click_deadlines:
-            return False
-
         now = time.time()
         raw_title = str(self.session_info.get(sid, {}).get("title", "") or table_id)
         if is_col:
@@ -12277,16 +12272,6 @@ class ChromeBridge(threading.Thread):
                 )
 
         if self._is_collector_session(sid):
-            key_by_tid = getattr(self, "table_scan_key_by_table_id", None)
-            if key_by_tid is None:
-                key_by_tid = {}
-                self.table_scan_key_by_table_id = key_by_tid
-            cur_click_key = str(getattr(self, "table_scan_current_click_key", "") or "").strip()
-            mapped_key = str(key_by_tid.get(table_id, "") or "")
-            if mapped_key and cur_click_key and mapped_key != cur_click_key:
-                # Ignore background mini-player ("Şimdi oynanıyor") requests from
-                # a previously scanned table while waiting on a newly clicked card.
-                return False
             self.table_scan_found_ids.add(table_id)
             # V2.9.35: once the collector is back in the Pragmatic lobby, lobby
             # preview/card API calls may still contain tableId. Do not recreate
@@ -13392,24 +13377,12 @@ class ChromeBridge(threading.Thread):
             sid_ctx = str(meta.get("session","") or "")
             nums=extract_statistic_history(body)
 
-            if (sid_ctx and self._is_collector_session(sid_ctx)) or bool(meta.get("collector")):
-                if self.table_scan_tab_walk and not self.table_scan_click_deadlines:
-                    return
-                key_by_tid = getattr(self, "table_scan_key_by_table_id", None)
-                if key_by_tid is None:
-                    key_by_tid = {}
-                    self.table_scan_key_by_table_id = key_by_tid
-                cur_click_key = str(getattr(self, "table_scan_current_click_key", "") or "").strip()
-                mapped_key = str(key_by_tid.get(table_id, "") or "")
-                if table_id and mapped_key and cur_click_key and mapped_key != cur_click_key:
-                    # Ignore background mini-player ("Şimdi oynanıyor") polling
-                    # from a previously scanned table while waiting on a new card.
-                    return
+            if sid_ctx and self._is_collector_session(sid_ctx):
                 if table_id:
                     self.table_scan_found_ids.add(table_id)
+                if self.table_scan_tab_walk and not self.table_scan_click_deadlines:
+                    return
                 if table_id and len(nums) >= 20:
-                    if cur_click_key:
-                        key_by_tid[table_id] = cur_click_key
                     display_name = self._clean_collector_label(
                         str(
                             self.table_scan_current_click_label
@@ -13432,7 +13405,7 @@ class ChromeBridge(threading.Thread):
                     )
                     self.state.mark_table_attempt(table_id, ok=True)
                     now_done = time.time()
-                    self._schedule_collector_return(sid_ctx, 0.25)
+                    self._schedule_collector_return(sid_ctx, 0.8)
                     probe_tid = self._target_id_for_session(sid_ctx)
                     if probe_tid in self.table_scan_probe_targets:
                         row = self.table_scan_probe_targets[probe_tid]
@@ -13449,10 +13422,6 @@ class ChromeBridge(threading.Thread):
                             f"{prefix}: NETWORK SON500 kaydedildi • {display_name[:44]} • {len(nums)}/500 • minimum bekleme sonrası lobiye dönülecek"
                         )
                 elif table_id and self.table_scan_tab_walk:
-                    self._mark_current_scan_card_done(
-                        table_id=table_id,
-                        theme_code=str(meta.get("theme_code") or ""),
-                    )
                     with self.state.lock:
                         self.state.table_scan_status = (
                             f"SEKMELİ TOPLA: network cevap var ama SON500 ayrıştırılamadı ({len(nums)}) • bekleniyor"
@@ -13493,23 +13462,13 @@ class ChromeBridge(threading.Thread):
             sid_ctx = str(ctx_meta.get("session","") or "")
 
             if sid_ctx and self._is_collector_session(sid_ctx):
-                if self.table_scan_tab_walk and not self.table_scan_click_deadlines:
-                    return
-                key_by_tid = getattr(self, "table_scan_key_by_table_id", None)
-                if key_by_tid is None:
-                    key_by_tid = {}
-                    self.table_scan_key_by_table_id = key_by_tid
-                cur_click_key = str(getattr(self, "table_scan_current_click_key", "") or "").strip()
-                mapped_key = str(key_by_tid.get(table_id, "") or "")
-                if table_id and mapped_key and cur_click_key and mapped_key != cur_click_key:
-                    return
                 if table_id:
                     self.table_scan_found_ids.add(table_id)
+                if self.table_scan_tab_walk and not self.table_scan_click_deadlines:
+                    return
                 if value.get("ok") and value.get("body") and table_id:
                     nums = extract_statistic_history(value.get("body"))
                     if len(nums) >= 20:
-                        if cur_click_key:
-                            key_by_tid[table_id] = cur_click_key
                         display_name = self._clean_collector_label(
                             self.table_scan_current_click_label
                             or self.table_scan_last_clicked_label
@@ -13530,7 +13489,7 @@ class ChromeBridge(threading.Thread):
                         )
                         self.state.mark_table_attempt(table_id, ok=True)
                         now_done = time.time()
-                        self._schedule_collector_return(sid_ctx, 0.25)
+                        self._schedule_collector_return(sid_ctx, 0.8)
                         probe_tid = self._target_id_for_session(sid_ctx)
                         if probe_tid in self.table_scan_probe_targets:
                             row = self.table_scan_probe_targets[probe_tid]
@@ -13671,21 +13630,11 @@ class ChromeBridge(threading.Thread):
                                     (self.session_table_activity.get(collector_sid, {}) or {}).get("table_id", "")
                                     or ""
                                 )
-                            key_by_tid = getattr(self, "table_scan_key_by_table_id", None)
-                            if key_by_tid is None:
-                                key_by_tid = {}
-                                self.table_scan_key_by_table_id = key_by_tid
-                            cur_click_key = str(getattr(self, "table_scan_current_click_key", "") or "").strip()
-                            mapped_key = str(key_by_tid.get(real_tid, "") or "") if real_tid else ""
-                            if real_tid and mapped_key and cur_click_key and mapped_key != cur_click_key:
-                                return
                             table_id, display_name = self._collector_table_identity(
                                 collector_sid,
                                 real_table_id=real_tid,
                                 title=str(self.table_scan_last_clicked_label or ""),
                             )
-                            if real_tid and cur_click_key:
-                                key_by_tid[real_tid] = cur_click_key
                             self._mark_current_scan_card_done(
                                 table_id=table_id,
                                 label=display_name,
@@ -14444,13 +14393,7 @@ class ChromeBridge(threading.Thread):
                     except Exception:
                         table_id=""
 
-                    is_collector_req = bool(self._is_collector_session(sid))
-                    if is_collector_req and table_id:
-                        key_by_tid = getattr(self, "table_scan_key_by_table_id", {}) or {}
-                        cur_click_key = str(getattr(self, "table_scan_current_click_key", "") or "").strip()
-                        mapped_key = str(key_by_tid.get(table_id, "") or "")
-                        if mapped_key and cur_click_key and mapped_key != cur_click_key:
-                            return
+                    if self._is_collector_session(sid) and table_id:
                         collector_title = self._clean_collector_label(
                             str(
                                 self.table_scan_current_click_label
