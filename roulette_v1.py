@@ -51,6 +51,86 @@ TAB_WALK_BLOCKED_TABLE_LABELS = (
     "GATES OF OLYMPUS", "OLYMPUS RULET", "OLYMPUS ROULETTE",
     "RULET DELUXE", "ROULETTE DELUXE",
 )
+PRAGMATIC_LOBBY_TABLES = (
+    # Row 1 (image-1 top row)
+    {"order": 1, "name": "Türkçe Rulet", "key": "TURKCE RULET", "patterns": ("TURKCE RULET", "TURKISH ROULETTE"), "blocked": False},
+    {"order": 2, "name": "Türkçe Mega Rulet", "key": "TURKCE MEGA RULET", "patterns": ("TURKCE MEGA RULET", "TURKCE MEGA", "TURKISH MEGA ROULETTE"), "blocked": False},
+    {"order": 3, "name": "Brezilya Portekizcesi Rulet", "key": "BREZILYA PORTEKIZCESI RULET", "patterns": ("BREZILYA PORTEKIZCESI RULET", "BRAZILIAN ROULETTE"), "blocked": False},
+    {"order": 4, "name": "Rulet 1", "key": "RULET 1", "patterns": ("RULET 1", "ROULETTE 1"), "blocked": False},
+    # Row 2 (image-1 second row)
+    {"order": 5, "name": "Immersive Rulet Deluxe", "key": "IMMERSIVE RULET DELUXE", "patterns": ("IMMERSIVE RULET DELUXE", "IMMERSIVE ROULETTE DELUXE"), "blocked": True},
+    {"order": 6, "name": "Rulet 2 Extra Time", "key": "RULET 2 EXTRA TIME", "patterns": ("RULET 2 EXTRA TIME", "ROULETTE 2 EXTRA TIME"), "blocked": False},
+    {"order": 7, "name": "Rulet Macao", "key": "RULET MACAO", "patterns": ("RULET MACAO", "ROULETTE MACAO"), "blocked": False},
+    {"order": 8, "name": "Hızlı Rulet 2", "key": "HIZLI RULET 2", "patterns": ("HIZLI RULET 2", "SPEED ROULETTE 2"), "blocked": False},
+    # Row 3 (image-2 top row)
+    {"order": 9, "name": "Rulet 3", "key": "RULET 3", "patterns": ("RULET 3", "ROULETTE 3"), "blocked": False},
+    {"order": 10, "name": "Fransız Ruleti Geri Ödemeli", "key": "FRANSIZ RULETI GERI ODEMELI", "patterns": ("FRANSIZ RULETI GERI ODEMELI", "FRANSIZ RULETI", "FRENCH ROULETTE"), "blocked": False},
+    {"order": 11, "name": "VIP Rulet", "key": "VIP RULET", "patterns": ("VIP RULET", "VIP ROULETTE"), "blocked": False},
+    {"order": 12, "name": "Hızlı Rulet 1", "key": "HIZLI RULET 1", "patterns": ("HIZLI RULET 1", "SPEED ROULETTE 1"), "blocked": False},
+    # Row 4 (image-2 second row)
+    {"order": 13, "name": "Brezilya Portekizcesi Mega Rulet", "key": "BREZILYA PORTEKIZCESI MEGA RULET", "patterns": ("BREZILYA PORTEKIZCESI MEGA RULET", "BREZILYA PORTEKIZCESI MEGA", "MEGA ROLETA BRASIL", "BRAZILIAN MEGA ROULETTE"), "blocked": False},
+    {"order": 14, "name": "Hızlı Rulet Latina", "key": "HIZLI RULET LATINA", "patterns": ("HIZLI RULET LATINA", "SPEED ROULETTE LATINA"), "blocked": False},
+    {"order": 15, "name": "Amerikan Ruleti", "key": "AMERIKAN RULETI", "patterns": ("AMERIKAN RULETI", "AMERIKAN RULET", "AMERICAN ROULETTE"), "blocked": False},
+    {"order": 16, "name": "Kristal Rulet", "key": "KRISTAL RULET", "patterns": ("KRISTAL RULET", "CRYSTAL ROULETTE"), "blocked": False},
+    # Row 5 (image-3 top row)
+    {"order": 17, "name": "Fortune Rulet", "key": "FORTUNE RULET", "patterns": ("FORTUNE RULET", "FORTUNE ROULETTE"), "blocked": False},
+    {"order": 18, "name": "Lucky 6 Rulet", "key": "LUCKY 6 RULET", "patterns": ("LUCKY 6 RULET", "LUCKY 6 ROULETTE"), "blocked": False},
+    {"order": 19, "name": "Gates of Olympus Rulet", "key": "GATES OF OLYMPUS RULET", "patterns": ("GATES OF OLYMPUS RULET", "GATES OF OLYMPUS", "OLYMPUS RULET", "OLYMPUS ROULETTE"), "blocked": True},
+    {"order": 20, "name": "Mega Rulet", "key": "MEGA RULET", "patterns": ("MEGA RULET", "MEGA ROULETTE"), "blocked": False},
+    # Row 6 (image-3 second row)
+    {"order": 21, "name": "Mega Rulet 3000", "key": "MEGA RULET 3000", "patterns": ("MEGA RULET 3000", "MEGA ROULETTE 3000"), "blocked": False},
+    {"order": 22, "name": "PowerUP Rulet", "key": "POWERUP RULET", "patterns": ("POWERUP RULET", "POWER UP RULET", "POWERUP ROULETTE", "POWER UP ROULETTE"), "blocked": True},
+    {"order": 23, "name": "Privé Lounge Rulet Deluxe", "key": "PRIVE LOUNGE RULET DELUXE", "patterns": ("PRIVE LOUNGE RULET DELUXE", "PRIVE LOUNGE ROULETTE DELUXE"), "blocked": True},
+    {"order": 24, "name": "Privé Lounge Rulet", "key": "PRIVE LOUNGE RULET", "patterns": ("PRIVE LOUNGE RULET", "PRIVE LOUNGE ROULETTE"), "blocked": True},
+    # Row 7 (image-4 top row)
+    {"order": 25, "name": "Almanca Rulet", "key": "ALMANCA RULET", "patterns": ("ALMANCA RULET", "GERMAN ROULETTE"), "blocked": False},
+    {"order": 26, "name": "Otomatik Rulet", "key": "OTOMATIK RULET", "patterns": ("OTOMATIK RULET", "AUTO ROULETTE"), "blocked": False},
+    {"order": 27, "name": "Rusça Rulet", "key": "RUSCA RULET", "patterns": ("RUSCA RULET", "RUSSIAN ROULETTE"), "blocked": False},
+    {"order": 28, "name": "Rumence Rulet", "key": "RUMENCE RULET", "patterns": ("RUMENCE RULET", "ROMANIAN ROULETTE"), "blocked": False},
+    # Row 8 (image-4 second row)
+    {"order": 29, "name": "Rulet Latina", "key": "RULET LATINA", "patterns": ("RULET LATINA", "ROULETTE LATINA"), "blocked": False},
+    {"order": 30, "name": "VIP Otomatik Rulet", "key": "VIP OTOMATIK RULET", "patterns": ("VIP OTOMATIK RULET", "VIP AUTO ROULETTE"), "blocked": False},
+    {"order": 31, "name": "Otomatik Mega Rulet", "key": "OTOMATIK MEGA RULET", "patterns": ("OTOMATIK MEGA RULET", "AUTO MEGA ROULETTE"), "blocked": False},
+    {"order": 32, "name": "Korece Rulet", "key": "KORECE RULET", "patterns": ("KORECE RULET", "KOREAN ROULETTE", "KORE RULET"), "blocked": False},
+)
+
+
+def normalize_lobby_table_text(text):
+    s = str(text or "")
+    tr_map = str.maketrans({
+        "İ": "I", "ı": "I", "Ğ": "G", "ğ": "G",
+        "Ü": "U", "ü": "U", "Ş": "S", "ş": "S",
+        "Ö": "O", "ö": "O", "Ç": "C", "ç": "C",
+        "É": "E", "é": "E", "Â": "A", "â": "A",
+    })
+    s = s.translate(tr_map).upper()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def canonical_pragmatic_table_info(text):
+    norm_txt = normalize_lobby_table_text(text)
+    if not norm_txt:
+        return None
+    # Strip trailing bet/currency/player numbers so "₺ 2 • 1" never looks like "Rulet 1"
+    cleaned = re.sub(r"(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$", "", norm_txt).strip()
+    target_str = cleaned or norm_txt
+    pairs = []
+    for item in PRAGMATIC_LOBBY_TABLES:
+        for pat in item["patterns"]:
+            pairs.append((len(pat), pat, item))
+    pairs.sort(key=lambda row: (-row[0], row[2]["order"]))
+    for _plen, pat, item in pairs:
+        if re.search(r"(?:^|[^A-Z0-9])" + re.escape(pat) + r"(?:$|[^A-Z0-9])", target_str):
+            return dict(item)
+    return None
+
+
+def canonical_pragmatic_table_name(text, fallback=""):
+    info = canonical_pragmatic_table_info(text)
+    if info:
+        return str(info["name"])
+    return str(fallback or "")
 DGA_FEED_WS_URL = "wss://dga.pragmaticplaylive.net/ws"
 DGA_DEFAULT_CASINO_ID = "ppcds00000003709"
 DGA_DEFAULT_CURRENCY = "TRY"
@@ -5788,6 +5868,9 @@ class RouletteState:
         row = dict(self.table_registry.get(tid, {}) or {})
         row["table_id"] = tid
         raw_dn = str(display_name or "").strip()
+        canon_dn = canonical_pragmatic_table_name(raw_dn, fallback="")
+        if canon_dn:
+            raw_dn = canon_dn
         norm_dn = raw_dn.lower()
         is_generic_dn = (
             not norm_dn
@@ -5797,6 +5880,10 @@ class RouletteState:
             or norm_dn == tid.lower()
         )
         prev_dn = str(row.get("display_name") or "").strip()
+        prev_canon = canonical_pragmatic_table_name(prev_dn, fallback="")
+        if prev_canon:
+            prev_dn = prev_canon
+            row["display_name"] = prev_dn
         prev_norm = prev_dn.lower()
         prev_is_real = bool(
             prev_dn
@@ -8341,8 +8428,8 @@ HISTORY500_SCAN = r"""
       if (!visibleStyle(el)) continue;
       const txt = norm(readableText(el));
       const hasId = !!(el.getAttribute('data-gameid') || el.getAttribute('data-game-id') || el.getAttribute('data-table-id') || el.getAttribute('data-tableid'));
-      if (!hasId && !/(ROULETTE|RULET)/.test(txt)) continue;
-      if (/BLACKJACK|BACCARAT|POKER|HISTORY|SON\s*500|LAST\s*500|OTOMAT|AUTOMATIC/.test(txt)) continue;
+      if (!hasId && !/(ROULETTE|RULET|ROLETA|PORTEKIZCESI\s*MEGA)/.test(txt)) continue;
+      if (/BLACKJACK|BACCARAT|POKER|HISTORY|SON\s*500|LAST\s*500|OTOMATIK\s+OYUN|AUTOMATIC\s+PLAY|SIMDI\s+OYNANIYOR|OYUNA\s+DON/.test(txt)) continue;
       const key = (txt.slice(0,80) + '|' + (el.getAttribute('data-gameid') || el.getAttribute('data-table-id') || '')).slice(0,140);
       if (seenCards.has(key)) continue;
       seenCards.add(key);
@@ -8545,13 +8632,43 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
         [str(x) for x in TAB_WALK_BLOCKED_TABLE_LABELS],
         ensure_ascii=False,
     )
+    canonical_json = json.dumps(
+        [dict(x) for x in PRAGMATIC_LOBBY_TABLES],
+        ensure_ascii=False,
+    )
     click_cards_json = json.dumps(bool(click_cards))
     return rf"""
 (() => {{
   const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[İı]/g, 'I').replace(/\s+/g, ' ').trim().toUpperCase();
+    .replace(/[İı]/g, 'I').replace(/[Ğğ]/g, 'G').replace(/[Üü]/g, 'U')
+    .replace(/[Şş]/g, 'S').replace(/[Öö]/g, 'O').replace(/[Çç]/g, 'C')
+    .replace(/[Éé]/g, 'E').replace(/\s+/g, ' ').trim().toUpperCase();
   const PY_CLICKED_KEYS = new Set({clicked_json});
   const PY_BLOCKED_TABLE_LABELS = {blocked_json};
+  const CANONICAL_TABLES = {canonical_json};
+  const CANONICAL_PATTERNS = [];
+  for (const item of CANONICAL_TABLES) {{
+    for (const pat of (item.patterns || [])) {{
+      const np = norm(pat);
+      if (np) {{
+        const esc = np.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
+        CANONICAL_PATTERNS.push({{
+          pat: np,
+          re: new RegExp('(?:^|[^A-Z0-9])' + esc + '(?:$|[^A-Z0-9])'),
+          item
+        }});
+      }}
+    }}
+  }}
+  CANONICAL_PATTERNS.sort((a, b) => b.pat.length - a.pat.length || a.item.order - b.item.order);
+  function matchCanonicalTable(rawText) {{
+    const full = norm(rawText || '').replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '').trim();
+    if (!full) return null;
+    for (const row of CANONICAL_PATTERNS) {{
+      if (row.re.test(full)) return row.item;
+    }}
+    return null;
+  }}
   const blockedLabel = s => {{
     const t = norm(s || '');
     return PY_BLOCKED_TABLE_LABELS.some(b => b && t.includes(b));
@@ -8559,9 +8676,32 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   const PY_CLICK_CARDS = {click_cards_json};
   const visible = el => {{
     if (!el) return false;
-    const r=el.getBoundingClientRect(), s=getComputedStyle(el);
-    return r.width>2 && r.height>2 && s.display!=='none' && s.visibility!=='hidden';
+    try {{
+      const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+      return r.width>2 && r.height>2 && s.display!=='none' && s.visibility!=='hidden';
+    }} catch (_) {{ return false; }}
   }};
+  function deepQueryAll(root, selector) {{
+    const out = [];
+    const seenRoots = new Set();
+    function walk(r) {{
+      if (!r || seenRoots.has(r)) return;
+      seenRoots.add(r);
+      try {{
+        for (const n of r.querySelectorAll(selector)) out.push(n);
+      }} catch (_) {{}}
+      try {{
+        for (const el of r.querySelectorAll('*')) {{
+          try {{ if (el.shadowRoot) walk(el.shadowRoot); }} catch (_) {{}}
+          try {{
+            if (String(el.tagName || '').toUpperCase() === 'IFRAME' && el.contentDocument) walk(el.contentDocument);
+          }} catch (_) {{}}
+        }}
+      }} catch (_) {{}}
+    }}
+    walk(root);
+    return out;
+  }}
   const clickable = el => {{
     let p=el;
     for(let i=0;i<7 && p;i++,p=p.parentElement) {{
@@ -8577,16 +8717,18 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   const host=String(location.hostname||'').toLowerCase();
   const path=String(location.pathname||'').toLowerCase();
   const bodyText=norm(document.body && document.body.innerText || '');
-  const lobbyTileElements = Array.from(document.querySelectorAll(
+  const lobbyTileElements = deepQueryAll(
+    document,
     '[data-testid="wow-tile"],[data-gameid],[data-game-id],[data-table-id],[data-tableid]'
-  )).filter(visible);
+  ).filter(visible);
   const providerContext = host.startsWith('games.')
     || host.startsWith('client.')
     || path.includes('/apps/lobby/')
     || path.includes('/desktop/roulette')
     || path.includes('/desktop/lobby')
     || norm(title).includes('PRAGMATIC PLAY LOBBY')
-    || lobbyTileElements.length >= 2;
+    || lobbyTileElements.length >= 2
+    || !!matchCanonicalTable(bodyText);
 
   function hoverAndClick(el) {{
     if (!el) return false;
@@ -8884,9 +9026,9 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     '[data-testid="wow-tile"]','[data-testid*="tile" i]',
     '[data-testid*="table" i]','[class*="tile" i]'
   ].join(',');
-  let candidates=Array.from(document.querySelectorAll(tileSelector));
+  let candidates=deepQueryAll(document, tileSelector);
   if (!candidates.length) {{
-    candidates=Array.from(document.querySelectorAll('[class*="card" i],[class*="game" i],a,div,span'));
+    candidates=deepQueryAll(document, '[class*="card" i],[class*="game" i],a,div,span');
   }}
 
   const rouletteHeading=Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]'))
@@ -8921,13 +9063,16 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   function extractCleanTableTitle(tile, rawFallback) {{
-    const lines = String(tile.innerText || tile.textContent || rawFallback || '')
+    const rawStr = String(tile.innerText || tile.textContent || rawFallback || '');
+    const canon = matchCanonicalTable(rawStr);
+    if (canon) return canon.name;
+    const lines = rawStr
       .split(/[\r\n]+/)
       .map(s => norm(s))
       .filter(Boolean);
     for (let idx = 0; idx < lines.length; idx++) {{
       let ln = lines[idx];
-      if (!/(ROULETTE|RULET)/.test(ln)) continue;
+      if (!/(ROULETTE|RULET|ROLETA)/.test(ln)) continue;
       if (idx + 1 < lines.length && /^(?:[0-9]{{1,3}}|VIP|AZURE|RUBY|MACAO|ITALIANA|THE\s*CLUB)$/.test(lines[idx + 1])) {{
         ln = (ln + ' ' + lines[idx + 1]).trim();
       }}
@@ -8935,14 +9080,14 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
         .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
         .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
         .trim();
-      if (cleaned.length >= 4 && /(ROULETTE|RULET)/.test(cleaned)) return cleaned.slice(0, 120);
+      if (cleaned.length >= 4 && /(ROULETTE|RULET|ROLETA)/.test(cleaned)) return cleaned.slice(0, 120);
     }}
-    let full = norm(tile.innerText || tile.textContent || rawFallback || '')
+    let full = norm(rawStr)
       .replace(/(?:₺|TRY|EUR|USD|\$|€)\s*[0-9.,\s-]+.*$/g, '')
       .replace(/^(?:[0-9]{{1,2}}\s+){{2,}}/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-    const m = full.match(/([A-Z0-9 ._-]{{0,32}}(?:ROULETTE|RULET)[A-Z0-9 ._-]{{0,32}})/);
+    const m = full.match(/([A-Z0-9 ._-]{{0,32}}(?:ROULETTE|RULET|ROLETA)[A-Z0-9 ._-]{{0,32}})/);
     if (m && m[1].trim().length >= 4) return m[1].trim().slice(0, 120);
     return full.slice(0, 120);
   }}
@@ -9027,21 +9172,26 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
 
     let tableId=firstAttrInTree(tile, ['data-table-id','data-tableid','tableid','table-id','data-table_id']);
     let gameId=firstAttrInTree(tile, ['data-gameid','data-game-id','gameid','game-id','data-game_id']);
-    const text=norm([
-      tile.innerText,tile.textContent,
+    const rawTileText = [
+      tile.innerText, tile.textContent,
       tile.getAttribute && tile.getAttribute('aria-label'),
       tile.getAttribute && tile.getAttribute('title')
-    ].join(' '));
-    const textLooksRoulette=/(ROULETTE|RULET)/.test(text);
+    ].join('\n');
+    const text = norm(rawTileText);
     if ((!text && !tableId && !gameId) || text.length>420) continue;
-    if (blockedLabel(text)) continue;
-    if (!textLooksRoulette && !(rouletteContext && (tableId || gameId))) continue;
     if (badCardText.test(text)) continue;
 
-    let cleanTitle = extractCleanTableTitle(tile, text);
+    const canon = matchCanonicalTable(rawTileText);
+    if (canon && canon.blocked) continue;
+    if (blockedLabel(text)) continue;
+
+    const textLooksRoulette = !!canon || /(ROULETTE|RULET|ROLETA)/.test(text);
+    if (!textLooksRoulette && !(rouletteContext && (tableId || gameId))) continue;
+
+    let cleanTitle = canon ? canon.name : extractCleanTableTitle(tile, text);
     if (blockedLabel(cleanTitle)) continue;
-    if (!/(ROULETTE|RULET)/.test(cleanTitle) && !(rouletteContext && (gameId || tableId))) continue;
-    if (badCardText.test(cleanTitle)) continue;
+    if (!canon && !/(ROULETTE|RULET|ROLETA)/.test(norm(cleanTitle)) && !(rouletteContext && (gameId || tableId))) continue;
+    if (badCardText.test(norm(cleanTitle))) continue;
 
     let cardHref = hrefOf(tile);
     const testid = String(tile.getAttribute && tile.getAttribute('data-testid') || '');
@@ -9056,13 +9206,16 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
 
     if (!cleanTitle && (gameId || tableId)) cleanTitle = 'ROULETTE ' + (gameId || tableId);
     const imgSig = cardImageSignature(tile);
-    const key = (tableId || gameId || (cleanTitle + (imgSig ? '|' + imgSig : ''))).slice(0, 200);
+    const key = canon
+      ? canon.key
+      : (tableId || gameId || (norm(cleanTitle) + (imgSig ? '|' + imgSig : ''))).slice(0, 200);
     if (!key) continue;
     seenTiles.add(tile);
     seenBoxes.push(rect);
     rawCardItems.push({{
       key,
       label: cleanTitle,
+      canonOrder: canon ? canon.order : 999,
       href: cardHref,
       testid,
       table_id: tableId,
@@ -9072,9 +9225,11 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }});
   }}
 
-  // Sort strictly row-by-row (top to bottom), then column-by-column (left to right)
-  // using relative row tolerance so both 3-card and 4-card rows sort 1 -> 2 -> 3 -> 4!
+  // Sort by canonical 1..32 lobby order first, then row-by-row (top to bottom) and column-by-column (left to right)!
   rawCardItems.sort((a, b) => {{
+    if (a.canonOrder !== b.canonOrder) {{
+      return a.canonOrder - b.canonOrder;
+    }}
     const rowTol = Math.max(22, Math.min(a.rect.height, b.rect.height) * 0.45);
     if (Math.abs(a.rect.top - b.rect.top) > rowTol) {{
       return a.rect.top - b.rect.top;
@@ -9086,13 +9241,15 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   for (const item of rawCardItems) {{
     const dupIdx = (titleCounts.get(item.key) || 0) + 1;
     titleCounts.set(item.key, dupIdx);
-    const uniqueKey = (!item.table_id && dupIdx > 1) ? (item.key + ' #' + dupIdx) : item.key;
-    const uniqueLabel = (!item.table_id && dupIdx > 1) ? (item.label + ' #' + dupIdx) : item.label;
+    const isCanon = item.canonOrder < 999;
+    const uniqueKey = (!isCanon && !item.table_id && dupIdx > 1) ? (item.key + ' #' + dupIdx) : item.key;
+    const uniqueLabel = (!isCanon && !item.table_id && dupIdx > 1) ? (item.label + ' #' + dupIdx) : item.label;
     if (seen.has(uniqueKey)) continue;
     seen.add(uniqueKey);
     cards.push({{
       key: uniqueKey,
       label: uniqueLabel,
+      order: item.canonOrder,
       href: item.href,
       testid: item.testid,
       table_id: item.table_id,
@@ -9101,6 +9258,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     cardHits.push({{
       key: uniqueKey,
       label: uniqueLabel,
+      order: item.canonOrder,
       hit: item.tile,
       rect: item.rect
     }});
@@ -9108,7 +9266,7 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
 
   if (!scanState.clickedKeys) scanState.clickedKeys = {{}};
   const nowMs = Date.now();
-  const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 480;
+  const clickReady = nowMs - Number(scanState.lastCardClickAt || 0) >= 420;
 
   // If the "Masa dolu" (Table full) modal from a VIP/Privé table is open on screen,
   // dismiss it by clicking "Tamam" / "OK" and skip that card without stopping the scan.
@@ -9132,15 +9290,20 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }};
   }}
 
-  const unclickedCards = cardHits.filter(c => !PY_CLICKED_KEYS.has(c.key));
+  const isCardClicked = c =>
+    PY_CLICKED_KEYS.has(c.key)
+    || PY_CLICKED_KEYS.has(norm(c.key))
+    || PY_CLICKED_KEYS.has(c.label)
+    || PY_CLICKED_KEYS.has(norm(c.label));
+  const unclickedCards = cardHits.filter(c => !isCardClicked(c));
 
   // If Korece Rulet (Korean Roulette) at the end of the lobby has already been
   // clicked and collected AND there are no remaining unclicked cards in the row,
   // stop the lobby scan right at Korece Rulet!
   const koreceDone = cardHits.some(c =>
     /\bKORECE\s*RULET\b|\bKOREAN\s*ROULETTE\b|\bKORE\s*RULET\b/.test(norm(c.label)) &&
-    PY_CLICKED_KEYS.has(c.key)
-  );
+    isCardClicked(c)
+  ) || PY_CLICKED_KEYS.has('KORECE RULET') || PY_CLICKED_KEYS.has('Korece Rulet');
   if (koreceDone && unclickedCards.length === 0) {{
     return {{
       ok: true,
@@ -9154,21 +9317,27 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   const scrollCandidates=[];
-  const root=document.scrollingElement;
-  if (root && root.scrollHeight>root.clientHeight+12) scrollCandidates.push(root);
+  if (cardHits.length && cardHits[0].hit) {{
+    let p = cardHits[0].hit.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {{
+      if (p.scrollHeight > p.clientHeight + 10 && p.clientHeight > 100) {{
+        scrollCandidates.push(p);
+      }}
+      p = p.parentElement;
+    }}
+  }}
+  const root=document.scrollingElement || document.documentElement || document.body;
+  if (root && root.scrollHeight>root.clientHeight+12 && !scrollCandidates.includes(root)) scrollCandidates.push(root);
   for (const el of Array.from(document.querySelectorAll('*')).slice(0,2500)) {{
-    if (el===root) continue;
+    if (scrollCandidates.includes(el)) continue;
     const style=getComputedStyle(el);
     const r=el.getBoundingClientRect();
-    if ((style.overflowY==='auto' || style.overflowY==='scroll')
+    if ((style.overflowY==='auto' || style.overflowY==='scroll' || style.overflowY==='overlay')
         && el.scrollHeight>el.clientHeight+12 && r.width>120 && r.height>100) {{
       scrollCandidates.push(el);
     }}
   }}
-  const scrollTarget=scrollCandidates.sort((a,b)=>
-    (b.clientHeight*Math.min(b.scrollHeight,8000))
-    -(a.clientHeight*Math.min(a.scrollHeight,8000))
-  )[0] || null;
+  const scrollTarget=scrollCandidates[0] || null;
   let scrollTop=0,scrollHeight=0,clientHeight=0,atBottom=false;
   if (scrollTarget) {{
     scrollTop=scrollTarget.scrollTop;
@@ -9179,28 +9348,22 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
   }}
 
   const next = unclickedCards[0] || null;
-  if (PY_CLICK_CARDS && next && clickReady && (nowMs - Number(scanState.clickedKeys[next.key] || 0)) >= 2000) {{
-    // If the next card is partially cut off near the bottom/top edge of the viewport,
-    // scroll it cleanly into view first so clicking never misses!
+  if (PY_CLICK_CARDS && next && clickReady && (nowMs - Number(scanState.clickedKeys[next.key] || 0)) >= 1600) {{
+    // Scroll the card cleanly into view synchronously and click it immediately
+    // in the same evaluation (never return early without clicking!).
     const inViewport = next.rect.top >= 16 && next.rect.bottom <= (window.innerHeight - 10);
-    if (!inViewport && scrollTarget && !atBottom && next.rect.bottom > (window.innerHeight - 10)) {{
-      scrollTarget.scrollBy({{
-        top: Math.max(180, Math.round(next.rect.top - window.innerHeight * 0.25)),
-        behavior: 'instant'
-      }});
-      return {{
-        ok: true,
-        mode: 'provider_lobby',
-        stage: 'scrolling-card-into-view',
-        cards,
-        scrollTop: scrollTarget.scrollTop,
-        scrollHeight,
-        clientHeight,
-        atBottom: (scrollHeight > clientHeight + 40) && (scrollTarget.scrollTop + clientHeight >= scrollHeight - 12),
-        atBottomSeen: !!scanState.atBottomSeen,
-        bodyLength: bodyText.length,
-        title, url: href
-      }};
+    if (!inViewport) {{
+      try {{
+        next.hit.scrollIntoView({{block: 'center', inline: 'nearest', behavior: 'instant'}});
+      }} catch (_) {{}}
+      if (scrollTarget && next.rect.bottom > (window.innerHeight - 10)) {{
+        try {{
+          scrollTarget.scrollBy({{
+            top: Math.max(160, Math.round(next.rect.top - window.innerHeight * 0.28)),
+            behavior: 'instant'
+          }});
+        }} catch (_) {{}}
+      }}
     }}
     scanState.clickedKeys[next.key] = nowMs;
     scanState.lastCardClickAt = nowMs;
@@ -9230,8 +9393,27 @@ def build_multi_table_nav_scan(clicked_keys=None, click_cards=True):
     }}
   }}
 
-  if (scrollTarget && !atBottom && cards.length > 0 && unclickedCards.length === 0 && clickReady) {{
-    scrollTarget.scrollBy({{top:Math.max(240,Math.floor(clientHeight*0.52)),behavior:'instant'}});
+  if (cards.length > 0 && unclickedCards.length === 0 && clickReady) {{
+    const nextWantedCanon = CANONICAL_TABLES.find(
+      t => !t.blocked && !PY_CLICKED_KEYS.has(t.key) && !PY_CLICKED_KEYS.has(norm(t.name))
+    ) || null;
+    const visOrders = cardHits.map(c => c.order).filter(o => o < 999);
+    const minVisOrder = visOrders.length ? Math.min(...visOrders) : 1;
+    const scrollUp = !!(nextWantedCanon && visOrders.length && nextWantedCanon.order < minVisOrder);
+    const step = (scrollUp ? -1 : 1) * Math.max(260, Math.floor((clientHeight || window.innerHeight || 600) * 0.55));
+    if (scrollTarget) {{
+      const prevTop = scrollTarget.scrollTop;
+      try {{ scrollTarget.scrollBy({{top: step, behavior: 'instant'}}); }} catch (_) {{}}
+      if (scrollTarget.scrollTop === prevTop && cardHits.length) {{
+        const anchorCard = scrollUp ? cardHits[0].hit : cardHits[cardHits.length - 1].hit;
+        try {{ anchorCard.scrollIntoView({{block: scrollUp ? 'end' : 'start', behavior: 'instant'}}); }} catch (_) {{}}
+        try {{ anchorCard.dispatchEvent(new WheelEvent('wheel', {{deltaY: step, bubbles: true, cancelable: true}})); }} catch (_) {{}}
+      }}
+      scrollTop = scrollTarget.scrollTop;
+      scrollHeight = scrollTarget.scrollHeight;
+      clientHeight = scrollTarget.clientHeight;
+      atBottom = (scrollHeight > clientHeight + 40) && (scrollTop + clientHeight >= scrollHeight - 12);
+    }}
   }}
 
   return {{
@@ -10644,6 +10826,10 @@ class ChromeBridge(threading.Thread):
             or getattr(self, "table_scan_last_clicked_label", "")
             or ""
         )
+        canon = canonical_pragmatic_table_info(cur_label) or canonical_pragmatic_table_info(key)
+        if canon:
+            self.table_scan_clicked_keys.add(str(canon["key"]))
+            self.table_scan_clicked_keys.add(str(canon["name"]))
         if self._is_korece_table(table_id=table_id, label=cur_label, theme_code=theme_code):
             self.table_scan_stop_after_current = True
 
@@ -10829,6 +11015,9 @@ class ChromeBridge(threading.Thread):
             or "/desktop/" in low
         ):
             return fallback
+        canon_name = canonical_pragmatic_table_name(label, fallback="")
+        if canon_name:
+            return canon_name
         nums = re.findall(r"\b(?:[0-9]|[12][0-9]|3[0-6])\b", label)
         upper = label.upper()
         if len(nums) >= 8:
@@ -12003,6 +12192,9 @@ class ChromeBridge(threading.Thread):
             return False
         return (
             sid == self.active_game_sid
+            or self._is_collector_session(sid)
+            or "client." in url
+            or "games." in url
             or "/desktop/" in url
             or "/gs2c/game/" in url
             or "/apps/lobby/" in url
@@ -17149,11 +17341,19 @@ def table_scan_self_test():
     assert "host.startsWith('client.')" in nav_script
     assert "path.includes('/desktop/roulette')" in nav_script
     assert "SIMDI OYNANIYOR" in nav_script
+    assert "CANONICAL_TABLES" in nav_script
+    assert "matchCanonicalTable" in nav_script
+    assert "scrolling-card-into-view" not in nav_script
+    assert len(PRAGMATIC_LOBBY_TABLES) == 32
+    assert canonical_pragmatic_table_name("34 1 23 34 3 27 Brezilya Portekizcesi Mega ... ₺ 2 49") == "Brezilya Portekizcesi Mega Rulet"
+    for item in PRAGMATIC_LOBBY_TABLES:
+        info = canonical_pragmatic_table_info(f"14 27 25 16 25 7 {item['name']} ₺ 2 94")
+        assert info is not None and info["order"] == item["order"] and info["name"] == item["name"]
     bridge.session_table_activity = {}
     bridge.table_scan_current_click_label = "RULET MACAO"
     bridge.table_scan_last_clicked_label = "RULET MACAO"
     bridge.table_scan_current_click_key = "RULET MACAO"
-    assert bridge._collector_table_identity("s1", real_table_id="203", title="Roulette") == ("203", "RULET MACAO")
+    assert bridge._collector_table_identity("s1", real_table_id="203", title="Roulette") == ("203", "Rulet Macao")
     return True
 
 
